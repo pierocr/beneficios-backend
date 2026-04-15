@@ -2,7 +2,10 @@ import { BciScraper } from "../scrapers/bci.scraper";
 import { BancoChileScraper } from "../scrapers/bancochile.scraper";
 import { CencosudScotiaScraper } from "../scrapers/cencosudscotia.scraper";
 import { FalabellaScraper } from "../scrapers/falabella.scraper";
+import { ItauScraper } from "../scrapers/itau.scraper";
+import { ScotiabankScraper } from "../scrapers/scotiabank.scraper";
 import { SantanderScraper } from "../scrapers/santander.scraper";
+import { TenpoScraper } from "../scrapers/tenpo.scraper";
 import { Provider } from "./provider.types";
 
 export const providers: Provider[] = [
@@ -47,6 +50,26 @@ export const providers: Provider[] = [
     scraper: new FalabellaScraper(),
   },
   {
+    slug: "itau",
+    name: "Itaú",
+    bankName: "Itaú",
+    country: "CL",
+    sourceUrl: "https://itaubeneficios.cl/beneficios/",
+    expectedMinRawBenefits: 120,
+    minSafePersistRatio: 0.7,
+    scraper: new ItauScraper(),
+  },
+  {
+    slug: "scotiabank",
+    name: "Scotiabank",
+    bankName: "Scotiabank",
+    country: "CL",
+    sourceUrl: "https://www.scotiarewards.cl/scclubfront/categoria/mundos/descuentos",
+    expectedMinRawBenefits: 110,
+    minSafePersistRatio: 0.7,
+    scraper: new ScotiabankScraper(),
+  },
+  {
     slug: "santander",
     name: "Santander",
     bankName: "Santander",
@@ -56,6 +79,16 @@ export const providers: Provider[] = [
     expectedMinRawBenefits: 60,
     minSafePersistRatio: 0.5,
     scraper: new SantanderScraper(),
+  },
+  {
+    slug: "tenpo",
+    name: "Tenpo",
+    bankName: "Tenpo",
+    country: "CL",
+    sourceUrl: "https://www.tenpo.cl/beneficios",
+    expectedMinRawBenefits: 40,
+    minSafePersistRatio: 0.7,
+    scraper: new TenpoScraper(),
   },
 ];
 

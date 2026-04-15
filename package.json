@@ -13,7 +13,10 @@
     "scrape:cencosudscotia": "ts-node src/jobs/run-scraper.ts cencosudscotia",
     "scrape:falabella": "ts-node src/jobs/run-scraper.ts falabella",
     "scrape:bci": "ts-node src/jobs/run-scraper.ts bci",
-    "scrape:santander": "ts-node src/jobs/run-scraper.ts santander"
+    "scrape:itau": "ts-node src/jobs/run-scraper.ts itau",
+    "scrape:scotiabank": "ts-node src/jobs/run-scraper.ts scotiabank",
+    "scrape:santander": "ts-node src/jobs/run-scraper.ts santander",
+    "scrape:tenpo": "ts-node src/jobs/run-scraper.ts tenpo"
   },
   "keywords": [],
   "author": "",
