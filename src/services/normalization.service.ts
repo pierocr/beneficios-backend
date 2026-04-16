@@ -367,19 +367,19 @@ export class NormalizationService {
     title: string,
     text: string,
   ): { categoryName: BenefitCategory; categorySource: CategorySource } {
+    if (resolvedMerchant.categoryFromCatalog) {
+      return {
+        categoryName: resolvedMerchant.categoryFromCatalog,
+        categorySource: "merchant_rule",
+      };
+    }
+
     const providerCategory = this.mapToSimpleCategory(rawBenefit.rawCategory);
 
     if (providerCategory) {
       return {
         categoryName: providerCategory,
         categorySource: "provider",
-      };
-    }
-
-    if (resolvedMerchant.categoryFromCatalog) {
-      return {
-        categoryName: resolvedMerchant.categoryFromCatalog,
-        categorySource: "merchant_rule",
       };
     }
 
@@ -414,7 +414,7 @@ export class NormalizationService {
         continue;
       }
 
-      if (keywords.some((keyword) => normalizedText.includes(toLowerNormalized(keyword)))) {
+      if (keywords.some((keyword) => this.containsNormalizedPhrase(normalizedText, keyword))) {
         return categoryName;
       }
     }
@@ -426,7 +426,7 @@ export class NormalizationService {
     const normalizedText = toLowerNormalized(text);
 
     for (const entry of MERCHANT_CATALOG) {
-      const matchedAlias = entry.aliases.find((alias) => normalizedText.includes(toLowerNormalized(alias)));
+      const matchedAlias = entry.aliases.find((alias) => this.containsNormalizedPhrase(normalizedText, alias));
 
       if (matchedAlias) {
         return {
@@ -437,6 +437,14 @@ export class NormalizationService {
     }
 
     return undefined;
+  }
+
+  private containsNormalizedPhrase(normalizedText: string, phrase: string): boolean {
+    const normalizedPhrase = toLowerNormalized(phrase);
+    const escapedPhrase = normalizedPhrase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const phrasePattern = new RegExp(`(^|[^a-z0-9])${escapedPhrase}($|[^a-z0-9])`);
+
+    return phrasePattern.test(normalizedText);
   }
 
   private extractCapAmount(text: string): number | undefined {

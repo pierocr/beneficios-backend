@@ -33,6 +33,7 @@ interface CencosudRutaCard {
   description: string;
   merchantName: string;
   redirectUrl: string | undefined;
+  imageUrl: string | undefined;
   logoUrl: string | undefined;
   location: string | undefined;
   schedule: string | undefined;
@@ -165,11 +166,21 @@ export class CencosudScotiaScraper implements BenefitScraper {
 
       return await page.evaluate(() => {
         const clean = (value: string | null | undefined): string => (value ?? "").replace(/\s+/g, " ").trim();
+        const getImageUrl = (element: Element): string | undefined => {
+          const images = Array.from(element.querySelectorAll("img"));
+          const image = images.find((item) => {
+            const alt = clean(item.getAttribute("alt")).toLowerCase();
+            const src = item.currentSrc || item.src || item.getAttribute("src") || "";
+            return Boolean(src) && !src.includes("arrow-right") && !src.endsWith(".svg") && !alt.includes("arrow");
+          });
+
+          return image?.currentSrc || image?.src || image?.getAttribute("src") || undefined;
+        };
 
         return Array.from(document.querySelectorAll(".grilla_item"))
           .map((element) => {
             const anchor = element.querySelector("a.btn_landing") as HTMLAnchorElement | null;
-            const logo = element.querySelector("a.btn_landing img") as HTMLImageElement | null;
+            const imageUrl = getImageUrl(element);
             const title = clean(element.querySelector(".tit")?.textContent);
             const description = clean(element.querySelector(".desc")?.textContent);
             const bullets = Array.from(element.querySelectorAll("ul li")).map((item) => clean(item.textContent));
@@ -186,7 +197,8 @@ export class CencosudScotiaScraper implements BenefitScraper {
               merchantName: title,
               description,
               redirectUrl,
-              logoUrl: logo?.src || undefined,
+              imageUrl,
+              logoUrl: imageUrl,
               location,
               schedule,
               legalText,
@@ -232,7 +244,7 @@ export class CencosudScotiaScraper implements BenefitScraper {
         index,
         cencosudBenefitId: card.id,
         redirectUrl: card.url ?? BENEFITS_HOME_URL,
-        imageUrl: card.card_img ?? card.banner_img ?? undefined,
+        imageUrl: card.card_img ?? card.banner_img ?? card.logo_card ?? undefined,
         logoUrl: card.logo_card ?? undefined,
         shortDescription: shortDescription || undefined,
         longDescription: longDescription || undefined,
@@ -276,6 +288,7 @@ export class CencosudScotiaScraper implements BenefitScraper {
         routeCardKey: card.routeCardKey,
         sourceSection: "ruta-del-sabor",
         redirectUrl: card.redirectUrl ?? undefined,
+        imageUrl: card.imageUrl ?? undefined,
         logoUrl: card.logoUrl ?? undefined,
         description: description || undefined,
         dayText: schedule || undefined,

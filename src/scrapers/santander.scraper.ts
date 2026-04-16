@@ -1,637 +1,305 @@
-import { access, readFile } from "node:fs/promises";
-import path from "node:path";
-import { PDFParse } from "pdf-parse";
 import { RawBenefit } from "../types/benefit.types";
 import { logger } from "../utils/logger";
-import { normalizeWhitespace, toLowerNormalized } from "../utils/text";
+import { htmlToText, normalizeWhitespace } from "../utils/text";
 import { BenefitScraper } from "./scraper.types";
 
-const SANTANDER_PDF_FILENAME = "BENEFICIOS_ABRIL_2026.pdf";
-const SANTANDER_PDF_RELATIVE_PATH = path.join("src", "data", "santander", SANTANDER_PDF_FILENAME);
-const SANTANDER_PDF_SOURCE_URL = `local://${SANTANDER_PDF_RELATIVE_PATH.replace(/\\/g, "/")}`;
-const SANTANDER_PDF_PATH = path.resolve(process.cwd(), SANTANDER_PDF_RELATIVE_PATH);
+const SANTANDER_BENEFITS_URL = "https://banco.santander.cl/beneficios";
+const SANTANDER_PROMOTIONS_API_URL = "https://banco.santander.cl/beneficios/promociones.json";
 const SANTANDER_BANK_NAME = "Santander";
 const SANTANDER_PROVIDER_SLUG = "santander";
-const SANTANDER_MONTH = "abril";
-const SANTANDER_YEAR = 2026;
-const MIN_EXPECTED_BENEFITS = 20;
+const SANTANDER_ITEMS_PER_PAGE = 500;
+const SANTANDER_SCRAPE_ATTEMPTS = 3;
+const SANTANDER_MIN_ACCEPTABLE_PROMOTIONS = 250;
+const SANTANDER_DEFAULT_HEADERS = {
+  accept: "application/json, text/plain, */*",
+  "accept-language": "es-CL,es;q=0.9",
+  referer: SANTANDER_BENEFITS_URL,
+  "user-agent":
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36",
+};
 
-const CATEGORY_NAMES = [
-  "Multiplica millas",
-  "Sabores",
-  "Cuotas sin interés",
-  "Verdes",
-  "Otros descuentos",
-] as const;
+const CATEGORY_TAG_LABELS: Record<string, string> = {
+  "cat-multiplica-millas": "Multiplica millas",
+  "cat-sabores": "Sabores",
+  "cat-cuotas-sin-interes": "Cuotas sin interés",
+  "cat-verdes": "Verdes",
+  "cat-descuentos": "Descuentos",
+  "cat-otros": "Tienda Santander",
+};
 
-const CATEGORY_LINE_MAP = new Map<string, string>(
-  CATEGORY_NAMES.map((category) => [toLowerNormalized(category), category]),
-);
+const DAY_TAG_LABELS: Record<string, string> = {
+  lunes: "Lunes",
+  martes: "Martes",
+  miercoles: "Miércoles",
+  jueves: "Jueves",
+  viernes: "Viernes",
+  sabado: "Sábado",
+  domingo: "Domingo",
+  "todos-los-dias": "Todos los días",
+};
 
-const IGNORE_LINES = new Set(
-  [
-    "Inicio",
-    "Multiplica millas",
-    "Sabores",
-    "Cuotas sin interés",
-    "Verdes",
-    "Otros descuentos",
-    "Exclusivo pagando con tus Tarjetas de Crédito Santander",
-    "Ingresa los 6 primeros dígitos de tu Tarjeta como código de descuento",
-  ].map((value) => toLowerNormalized(value)),
-);
+const CARD_TAG_LABELS: Record<string, string> = {
+  "todas-las-tarjetas": "Todas las tarjetas",
+  "tarjetas-credito": "Crédito",
+  "tarjeta-credito": "Crédito",
+  "tarjetas-debito": "Débito",
+  debitos: "Débito",
+  "wm-limited": "WorldMember Limited",
+  amex: "Amex",
+  empresas: "Empresas",
+  "latam-pass": "LATAM Pass",
+  "life-y-debito": "Life y Débito",
+};
 
-const DAY_LINE_PATTERN =
-  /^(lunes|martes|miércoles|miercoles|jueves|viernes|sábado|sabado|domingo|lunes y miércoles|lunes y miercoles|martes y jueves|martes y viernes|lunes, martes y miércoles|lunes, martes y miercoles|todos los días|todos los dias|lunes a jueves|sábados a miércoles|sabados a miercoles|lunes, miércoles y viernes|lunes, miercoles y viernes|martes y jueves|lunes, martes y miércoles)$/i;
-const PAGE_MARKER_PATTERN = /^--\s*\d+\s+of\s+\d+\s*--$/i;
-const BLOCK_MAX_LINES = 10;
-const DISCOUNT_PATTERN =
-  /(?:hasta\s+)?\d{1,2}\s*%\s*dcto\.?|(?:hasta\s+un\s+)?\d{1,2}\s*%\s*de\s*descuento|\d+\s*milla(?:s)?\s+adicional(?:es)?|cuotas\s*sin\s*inter[eé]s|\d+\s*a\s*\d+\s*cuotas\s*sin\s*inter[eé]s|\d+\s*cuotas\s*sin\s*inter[eé]s/i;
-const CONDITION_HINT_PATTERN =
-  /^(válido|valido|exclusivo|tope|sin tope|código|codigo|cupón|cupon|descuento|compras|compra|presencial|online|delivery|retiro|excluye|no aplica|no acumulable|acumulable|hasta|desde|solo|aplica|incluye|cae|calculado|operación|operacion)/i;
-const DOMAIN_PATTERN = /(?:https?:\/\/)?(?:www\.)?([a-z0-9-]+(?:\.[a-z0-9-]+)*)\.cl\b/gi;
-const GENERIC_MERCHANTS = new Set(
-  [
-    "local",
-    "locales",
-    "tienda",
-    "tiendas",
-    "presencial",
-    "online",
-    "santiago y regiones",
-    "santander beneficio",
-    "multiplica",
-    "sabores",
-    "verdes",
-    "otros descuentos",
-  ].map((value) => toLowerNormalized(value)),
-);
-
-interface SantanderPdfBenefit {
-  title: string;
-  merchant: string;
-  category?: string;
-  discount?: string;
-  description?: string;
-  conditions?: string;
-  rawText: string;
+interface SantanderApiResponse {
+  promociones?: SantanderPromotion[];
+  meta?: {
+    total_entries?: number;
+    per_page?: number;
+    current_page?: number;
+    total_pages?: number;
+  };
 }
 
-interface ParsedLine {
-  value: string;
-  normalized: string;
+interface SantanderCustomField {
+  id?: number;
+  value?: string | number | boolean | null;
+}
+
+interface SantanderPromotion {
+  id: number;
+  uuid?: string;
+  created_at?: string;
+  updated_at?: string;
+  published_at?: string;
+  url?: string;
+  title?: string;
+  slug?: string;
+  excerpt?: string;
+  description?: string;
+  covers?: string[];
+  tags?: string[];
+  category?: string | null;
+  site_id?: number;
+  conditions?: string;
+  start_date?: string | null;
+  end_date?: string | null;
+  discount?: string | number | null;
+  location_street?: string | null;
+  latitude?: string | number | null;
+  longitude?: string | number | null;
+  custom_fields?: Record<string, SantanderCustomField | undefined>;
 }
 
 export class SantanderScraper implements BenefitScraper {
   async scrape(): Promise<RawBenefit[]> {
-    await this.ensurePdfExists();
+    let lastError: Error | undefined;
 
-    logger.info("Santander PDF file located", {
-      sourceFile: SANTANDER_PDF_FILENAME,
-      filePath: SANTANDER_PDF_PATH,
-    });
+    for (let attempt = 1; attempt <= SANTANDER_SCRAPE_ATTEMPTS; attempt += 1) {
+      try {
+        const firstPage = await this.fetchPromotionsPage(1);
+        const totalPages = firstPage.meta?.total_pages ?? 1;
+        const totalEntries = firstPage.meta?.total_entries ?? 0;
+        const promotions = [...(firstPage.promociones ?? [])];
 
-    const buffer = await readFile(SANTANDER_PDF_PATH);
-    const parser = new PDFParse({ data: buffer });
+        for (let pageNumber = 2; pageNumber <= totalPages; pageNumber += 1) {
+          const pageResponse = await this.fetchPromotionsPage(pageNumber);
+          promotions.push(...(pageResponse.promociones ?? []));
+        }
 
-    try {
-      const result = await parser.getText();
-      const text = normalizeWhitespace(result.text ?? "").length > 0 ? result.text : "";
+        const uniquePromotions = Array.from(
+          new Map(
+            promotions.map((promotion) => [promotion.uuid ?? promotion.slug ?? String(promotion.id), promotion]),
+          ).values(),
+        );
 
-      logger.info("Santander PDF parsed", {
-        sourceFile: SANTANDER_PDF_FILENAME,
-        charactersExtracted: text.length,
-      });
+        logger.info("Santander promotions fetched", {
+          attempt,
+          totalEntries,
+          totalPages,
+          promotionsDetected: uniquePromotions.length,
+        });
 
-      if (normalizeWhitespace(text).length === 0) {
-        throw new Error(`Santander PDF ${SANTANDER_PDF_FILENAME} does not contain extractable text.`);
-      }
+        if (uniquePromotions.length < SANTANDER_MIN_ACCEPTABLE_PROMOTIONS) {
+          throw new Error(
+            `Suspicious Santander scrape result on attempt ${attempt}: expected at least ${SANTANDER_MIN_ACCEPTABLE_PROMOTIONS} promotions and got ${uniquePromotions.length}.`,
+          );
+        }
 
-      const benefits = this.extractBenefitsFromText(text);
+        if (totalEntries > 0 && uniquePromotions.length < totalEntries) {
+          throw new Error(
+            `Santander API returned ${uniquePromotions.length} unique promotions but reported ${totalEntries} total entries on attempt ${attempt}.`,
+          );
+        }
 
-      logger.info("Santander PDF benefits detected", {
-        sourceFile: SANTANDER_PDF_FILENAME,
-        benefitsDetected: benefits.length,
-      });
-
-      if (benefits.length < MIN_EXPECTED_BENEFITS) {
-        logger.warn("Santander PDF detected fewer benefits than expected", {
-          sourceFile: SANTANDER_PDF_FILENAME,
-          benefitsDetected: benefits.length,
-          minimumExpected: MIN_EXPECTED_BENEFITS,
+        return uniquePromotions.map((promotion, index) => this.toRawBenefit(promotion, index));
+      } catch (error) {
+        lastError = error instanceof Error ? error : new Error("Unknown error");
+        logger.warn("Santander scrape attempt failed", {
+          attempt,
+          message: lastError.message,
         });
       }
 
-      if (benefits.length === 0) {
-        throw new Error(`No Santander benefits were detected in ${SANTANDER_PDF_FILENAME}.`);
-      }
-
-      return benefits.map((benefit, index) => this.toRawBenefit(benefit, index));
-    } finally {
-      await parser.destroy();
-    }
-  }
-
-  private async ensurePdfExists(): Promise<void> {
-    try {
-      await access(SANTANDER_PDF_PATH);
-    } catch {
-      throw new Error(`Santander PDF file not found at ${SANTANDER_PDF_PATH}.`);
-    }
-  }
-
-  private extractBenefitsFromText(text: string): SantanderPdfBenefit[] {
-    const lines = this.parseLines(text);
-    const triggerIndexes = this.findBenefitTriggerIndexes(lines);
-    const benefits: SantanderPdfBenefit[] = [];
-    const seen = new Set<string>();
-
-    for (let index = 0; index < triggerIndexes.length; index += 1) {
-      const triggerIndex = triggerIndexes[index]!;
-      const nextTriggerIndex = triggerIndexes[index + 1];
-      const category = this.findNearestCategory(lines, triggerIndex);
-      const blockLines = this.buildBenefitBlock(lines, triggerIndex, nextTriggerIndex);
-
-      if (blockLines.length === 0) {
-        continue;
-      }
-
-      const rawText = normalizeWhitespace(blockLines.map((line) => line.value).join(" | "));
-      const rawKey = toLowerNormalized(rawText);
-
-      if (!rawText || seen.has(rawKey)) {
-        continue;
-      }
-
-      const discount = this.extractDiscount(blockLines);
-      const merchant = this.extractMerchant(blockLines);
-      const description = this.extractDescription(blockLines, merchant, discount);
-      const conditions = this.extractConditions(blockLines, discount);
-      const title = this.buildTitle({ merchant, discount, category, description });
-
-      if (!title || !merchant || !this.isValidExtractedBenefit(merchant, rawText, category)) {
-        continue;
-      }
-
-      seen.add(rawKey);
-
-      const benefit: SantanderPdfBenefit = {
-        title,
-        merchant,
-        rawText,
-      };
-
-      if (category) {
-        benefit.category = category;
-      }
-
-      if (discount) {
-        benefit.discount = discount;
-      }
-
-      if (description) {
-        benefit.description = description;
-      }
-
-      if (conditions) {
-        benefit.conditions = conditions;
-      }
-
-      benefits.push(benefit);
-    }
-
-    return benefits;
-  }
-
-  private parseLines(text: string): ParsedLine[] {
-    return text
-      .split(/\r?\n/)
-      .map((line) => normalizeWhitespace(line))
-      .filter((line) => line.length > 0)
-      .filter((line) => !PAGE_MARKER_PATTERN.test(line))
-      .map((value) => ({
-        value,
-        normalized: toLowerNormalized(value),
-      }));
-  }
-
-  private findBenefitTriggerIndexes(lines: ParsedLine[]): number[] {
-    const indexes: number[] = [];
-
-    for (let index = 0; index < lines.length; index += 1) {
-      const line = lines[index]!;
-      const nextLine = lines[index + 1];
-      const combined = nextLine ? normalizeWhitespace(`${line.value} ${nextLine.value}`) : line.value;
-
-      if (this.isBenefitTrigger(line.value, combined)) {
-        indexes.push(index);
+      if (attempt < SANTANDER_SCRAPE_ATTEMPTS) {
+        await new Promise((resolve) => setTimeout(resolve, 1500 * attempt));
       }
     }
 
-    return indexes.filter((index, currentPosition) => {
-      const previousIndex = indexes[currentPosition - 1];
-
-      return previousIndex === undefined || index - previousIndex > 1;
+    logger.error("Santander scraper failed", {
+      message: lastError?.message ?? "Unknown error",
     });
-  }
 
-  private isBenefitTrigger(currentLine: string, combinedLine: string): boolean {
-    const normalizedCurrent = toLowerNormalized(currentLine);
-    const normalizedCombined = toLowerNormalized(combinedLine);
-
-    if (
-      IGNORE_LINES.has(normalizedCurrent) ||
-      CATEGORY_LINE_MAP.has(normalizedCurrent) ||
-      this.isNavigationLine(currentLine) ||
-      this.isNavigationLine(combinedLine)
-    ) {
-      return false;
-    }
-
-    if (
-      /cuotas\s*sin\s*inter[eé]s/i.test(currentLine) &&
-      !/\d|cae|válido|valido|calculado/i.test(combinedLine)
-    ) {
-      return false;
-    }
-
-    if (DISCOUNT_PATTERN.test(currentLine)) {
-      return true;
-    }
-
-    if (normalizedCurrent === "hasta" && /%/.test(combinedLine) && /(dcto|descuento)/i.test(combinedLine)) {
-      return true;
-    }
-
-    return DISCOUNT_PATTERN.test(combinedLine) && !this.isNavigationLine(combinedLine);
-  }
-
-  private findNearestCategory(lines: ParsedLine[], startIndex: number): string | undefined {
-    for (let index = startIndex; index >= 0; index -= 1) {
-      const category = CATEGORY_LINE_MAP.get(lines[index]!.normalized);
-
-      if (category) {
-        return category;
-      }
-    }
-
-    return undefined;
-  }
-
-  private buildBenefitBlock(
-    lines: ParsedLine[],
-    triggerIndex: number,
-    nextTriggerIndex: number | undefined,
-  ): ParsedLine[] {
-    let startIndex = triggerIndex;
-
-    for (let index = triggerIndex - 1; index >= Math.max(0, triggerIndex - 2); index -= 1) {
-      const line = lines[index]!;
-
-      if (this.isNavigationLine(line.value) || CATEGORY_LINE_MAP.has(line.normalized)) {
-        break;
-      }
-
-      startIndex = index;
-    }
-
-    const upperBound = Math.min(
-      lines.length - 1,
-      triggerIndex + BLOCK_MAX_LINES,
-      nextTriggerIndex !== undefined ? nextTriggerIndex - 1 : lines.length - 1,
+    throw new Error(
+      `Failed to scrape Santander benefits from ${SANTANDER_BENEFITS_URL}: ${lastError?.message ?? "Unknown error"}`,
     );
-    const block: ParsedLine[] = [];
-
-    for (let index = startIndex; index <= upperBound; index += 1) {
-      const line = lines[index]!;
-
-      if (CATEGORY_LINE_MAP.has(line.normalized) || this.isNavigationLine(line.value)) {
-        continue;
-      }
-
-      if (IGNORE_LINES.has(line.normalized)) {
-        continue;
-      }
-
-      if (PAGE_MARKER_PATTERN.test(line.value)) {
-        continue;
-      }
-
-      block.push(line);
-    }
-
-    return this.compactBlockLines(block);
   }
 
-  private compactBlockLines(lines: ParsedLine[]): ParsedLine[] {
-    const compacted: ParsedLine[] = [];
+  private async fetchPromotionsPage(pageNumber: number): Promise<SantanderApiResponse> {
+    const searchParams = new URLSearchParams({
+      per_page: String(SANTANDER_ITEMS_PER_PAGE),
+      page: String(pageNumber),
+      custom_fields: "true",
+      tags: "home-disfrutadores",
+      orderby: "updated_at",
+      order: "desc",
+    });
 
-    for (const line of lines) {
-      const previous = compacted[compacted.length - 1];
+    const response = await fetch(`${SANTANDER_PROMOTIONS_API_URL}?${searchParams.toString()}`, {
+      headers: SANTANDER_DEFAULT_HEADERS,
+    });
 
-      if (previous?.normalized === line.normalized) {
-        continue;
-      }
-
-      compacted.push(line);
+    if (!response.ok) {
+      throw new Error(`Santander promotions API returned ${response.status} on page ${pageNumber}.`);
     }
 
-    return compacted;
+    return (await response.json()) as SantanderApiResponse;
   }
 
-  private extractDiscount(lines: ParsedLine[]): string | undefined {
-    const joined = lines.map((line) => line.value).join(" ");
-    const match = joined.match(DISCOUNT_PATTERN);
+  private toRawBenefit(promotion: SantanderPromotion, index: number): RawBenefit {
+    const title = normalizeWhitespace(promotion.title ?? "Beneficio Santander");
+    const externalSubtitle = this.getCustomField(promotion, "Bajada externa");
+    const internalSubtitle = this.getCustomField(promotion, "Bajada interna");
+    const validityText = this.getCustomField(promotion, "Vigencia");
+    const regionText = this.getCustomField(promotion, "Región cobertura");
+    const communeText = this.getCustomField(promotion, "Comuna cobertura");
+    const externalUrl = this.getCustomField(promotion, "Sitio web beneficio");
+    const fortyLandingTitle = this.getCustomField(promotion, "Titulo en landing Cuarenta");
+    const fortyLandingSubtitle = this.getCustomField(promotion, "Bajada en landing Cuarenta");
+    const milesValidityText = this.getCustomField(promotion, "Validez en landing Mas millas");
+    const metaDescription = this.getCustomField(promotion, "Meta Description");
+    const descriptionText = htmlToText(promotion.description ?? "");
+    const conditionsText = normalizeWhitespace(promotion.conditions ?? "");
+    const categoryText = this.extractLabels(promotion.tags, CATEGORY_TAG_LABELS).join(" | ");
+    const dayLabels = this.extractLabels(promotion.tags, DAY_TAG_LABELS);
+    const cardLabels = this.extractLabels(promotion.tags, CARD_TAG_LABELS);
+    const regionList = this.splitList(regionText);
+    const communeList = this.splitList(communeText);
+    const sourceUrl = promotion.url || this.buildDetailUrl(promotion.slug);
+    const benefitLabel = normalizeWhitespace(externalSubtitle || internalSubtitle || String(promotion.discount ?? ""));
 
-    if (!match?.[0]) {
-      return undefined;
-    }
+    const rawPieces = [
+      title,
+      benefitLabel,
+      internalSubtitle,
+      descriptionText,
+      validityText,
+      regionText,
+      communeText,
+      categoryText,
+      dayLabels.join(" | "),
+      cardLabels.join(" | "),
+      conditionsText,
+      metaDescription,
+    ]
+      .map((item) => normalizeWhitespace(item))
+      .filter(Boolean);
 
-    return normalizeWhitespace(match[0]);
-  }
-
-  private extractMerchant(lines: ParsedLine[]): string {
-    const lineValues = lines.map((line) => line.value);
-    const domainMerchant = this.extractMerchantFromDomains(lineValues);
-
-    if (domainMerchant) {
-      return domainMerchant;
-    }
-
-    for (const line of lineValues) {
-      const merchant = this.extractMerchantFromSentence(line);
-
-      if (merchant) {
-        return merchant;
-      }
-    }
-
-    for (const line of lineValues) {
-      if (this.isLikelyMerchantLabel(line)) {
-        return normalizeWhitespace(line);
-      }
-    }
-
-    return this.extractHeadlineCandidate(lines) ?? "Santander Beneficio";
-  }
-
-  private extractMerchantFromDomains(lines: string[]): string | undefined {
-    for (const line of lines) {
-      const matches = Array.from(line.matchAll(DOMAIN_PATTERN));
-      const firstMatch = matches[0];
-
-      if (!firstMatch?.[1]) {
-        continue;
-      }
-
-      const domainRoot = firstMatch[1].split(".")[0] ?? "";
-      const cleaned = domainRoot.replace(/[-_]+/g, " ").trim();
-
-      if (!cleaned) {
-        continue;
-      }
-
-      return this.toTitleCase(cleaned);
-    }
-
-    return undefined;
-  }
-
-  private extractMerchantFromSentence(line: string): string | undefined {
-    if (/^exclusivo pagando/i.test(line)) {
-      return undefined;
-    }
-
-    const match = line.match(
-      /\b(?:válido|valido|exclusivo|en)\s+(?:en\s+)?([A-Z0-9][^.,;]+?)(?=\s+(?:y|o)\s+(?:www\.|[a-z0-9-]+\.cl\b)|[.,;]|$)/i,
-    );
-
-    if (!match?.[1]) {
-      return undefined;
-    }
-
-    const merchant = normalizeWhitespace(match[1])
-      .replace(/^tiendas?\s+y\s+/i, "")
-      .replace(/^tiendas?\s+/i, "")
-      .replace(/^local(?:es)?\s+y\s+/i, "")
-      .replace(/^local(?:es)?\s+/i, "")
-      .trim();
-
-    if (
-      !merchant ||
-      merchant.length < 3 ||
-      CONDITION_HINT_PATTERN.test(merchant) ||
-      GENERIC_MERCHANTS.has(toLowerNormalized(merchant))
-    ) {
-      return undefined;
-    }
-
-    return merchant;
-  }
-
-  private isLikelyMerchantLabel(line: string): boolean {
-    const normalized = toLowerNormalized(line);
-
-    if (
-      normalized.length < 3 ||
-      IGNORE_LINES.has(normalized) ||
-      CATEGORY_LINE_MAP.has(normalized) ||
-      this.isNavigationLine(line) ||
-      DAY_LINE_PATTERN.test(line) ||
-      CONDITION_HINT_PATTERN.test(line) ||
-      DISCOUNT_PATTERN.test(line) ||
-      GENERIC_MERCHANTS.has(normalized)
-    ) {
-      return false;
-    }
-
-    return /^[\p{L}\p{N}&'().\- ]+$/u.test(line);
-  }
-
-  private extractDescription(
-    lines: ParsedLine[],
-    merchant: string,
-    discount: string | undefined,
-  ): string | undefined {
-    const descriptionLines = lines
-      .map((line) => line.value)
-      .filter((line) => {
-        if (line === merchant || line === discount) {
-          return false;
-        }
-
-        if (DAY_LINE_PATTERN.test(line)) {
-          return false;
-        }
-
-        if (this.isNavigationLine(line)) {
-          return false;
-        }
-
-        if (CONDITION_HINT_PATTERN.test(line)) {
-          return false;
-        }
-
-        return !DISCOUNT_PATTERN.test(line);
-      })
-      .slice(0, 3);
-
-    if (descriptionLines.length === 0) {
-      return undefined;
-    }
-
-    return normalizeWhitespace(descriptionLines.join(" "));
-  }
-
-  private extractConditions(lines: ParsedLine[], discount: string | undefined): string | undefined {
-    const conditionLines = lines
-      .map((line) => line.value)
-      .filter((line) => line !== discount)
-      .filter((line) => CONDITION_HINT_PATTERN.test(line) || DAY_LINE_PATTERN.test(line))
-      .slice(0, 6);
-
-    if (conditionLines.length === 0) {
-      return undefined;
-    }
-
-    return normalizeWhitespace(conditionLines.join(" "));
-  }
-
-  private buildTitle(input: {
-    merchant: string;
-    discount: string | undefined;
-    category: string | undefined;
-    description: string | undefined;
-  }): string {
-    const titleParts = [input.merchant];
-
-    if (input.discount) {
-      titleParts.push(input.discount);
-    } else if (input.category) {
-      titleParts.push(input.category);
-    } else if (input.description) {
-      titleParts.push(input.description);
-    }
-
-    return normalizeWhitespace(titleParts.join(" - "));
-  }
-
-  private toRawBenefit(benefit: SantanderPdfBenefit, index: number): RawBenefit {
-    return {
+    const rawBenefit: RawBenefit = {
       providerSlug: SANTANDER_PROVIDER_SLUG,
       bankName: SANTANDER_BANK_NAME,
-      sourceUrl: SANTANDER_PDF_SOURCE_URL,
-      rawTitle: benefit.title,
-      rawMerchant: benefit.merchant,
-      rawText: benefit.rawText,
+      sourceUrl,
+      rawTitle: benefitLabel ? `${title} - ${benefitLabel}` : title,
+      rawMerchant: title,
+      rawText: rawPieces.join(" | "),
       extractedAt: new Date().toISOString(),
       metadata: {
         index,
-        sourceType: "pdf",
-        sourceFile: SANTANDER_PDF_FILENAME,
-        month: SANTANDER_MONTH,
-        year: SANTANDER_YEAR,
-        category: benefit.category,
-        discount: benefit.discount,
-        description: benefit.description,
-        conditions: benefit.conditions,
+        sourceType: "modyo_promotions_api",
+        promotionId: promotion.id,
+        promotionUuid: promotion.uuid,
+        promotionSlug: promotion.slug,
+        textLength: rawPieces.join(" | ").length,
+        imageUrl: promotion.covers?.[0],
+        detailImageUrl: promotion.covers?.[1],
+        redirectUrl: sourceUrl,
+        externalUrl: externalUrl || undefined,
+        benefitLabel: benefitLabel || undefined,
+        excerpt: normalizeWhitespace(promotion.excerpt ?? "") || undefined,
+        description: descriptionText || undefined,
+        descriptionHtml: promotion.description || undefined,
+        legalText: conditionsText || undefined,
+        validityText: validityText || undefined,
+        startDate: promotion.start_date,
+        endDate: promotion.end_date,
+        publishedAt: promotion.published_at,
+        updatedAt: promotion.updated_at,
+        createdAt: promotion.created_at,
+        categoryText: categoryText || undefined,
+        categories: categoryText ? categoryText.split(" | ") : [],
+        tags: promotion.tags ?? [],
+        tagsText: (promotion.tags ?? []).join(" | "),
+        dayLabels,
+        paymentMethodHints: cardLabels,
+        regions: regionList,
+        communes: communeList,
+        regionText: regionText || undefined,
+        communeText: communeText || undefined,
+        fortyLandingTitle: fortyLandingTitle || undefined,
+        fortyLandingSubtitle: fortyLandingSubtitle || undefined,
+        milesValidityText: milesValidityText || undefined,
+        metaDescription: metaDescription || undefined,
+        latitude: promotion.latitude,
+        longitude: promotion.longitude,
+        locationStreet: promotion.location_street,
       },
     };
+
+    if (categoryText) {
+      rawBenefit.rawCategory = categoryText;
+    }
+
+    return rawBenefit;
   }
 
-  private toTitleCase(value: string): string {
+  private getCustomField(promotion: SantanderPromotion, fieldName: string): string {
+    const value = promotion.custom_fields?.[fieldName]?.value;
+
+    if (value === undefined || value === null || value === false) {
+      return "";
+    }
+
+    return normalizeWhitespace(String(value));
+  }
+
+  private extractLabels(tags: string[] | undefined, labelsByTag: Record<string, string>): string[] {
+    return (tags ?? [])
+      .map((tag) => labelsByTag[tag])
+      .filter((label): label is string => Boolean(label));
+  }
+
+  private splitList(value: string): string[] {
     return value
-      .split(/\s+/)
-      .filter(Boolean)
-      .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
-      .join(" ");
+      .split(",")
+      .map((item) => normalizeWhitespace(item))
+      .filter(Boolean);
   }
 
-  private isValidExtractedBenefit(merchant: string, rawText: string, category: string | undefined): boolean {
-    const normalizedMerchant = toLowerNormalized(merchant);
-    const normalizedRawText = toLowerNormalized(rawText);
-    const categoryMentions = CATEGORY_NAMES.filter((item) =>
-      normalizedRawText.includes(toLowerNormalized(item)),
-    ).length;
-    const hasDomainSignal = /\.(?:cl|com)\b/i.test(rawText);
-    const hasNamedVenueSignal =
-      /\b(?:válido|valido|exclusivo)\s+en\s+(?!local(?:es)?\b|tiendas?\b|tienda\b)([a-z0-9][^.,;]+)/i.test(rawText);
-
-    if (
-      GENERIC_MERCHANTS.has(normalizedMerchant) ||
-      normalizedMerchant.includes("beneficio") ||
-      normalizedMerchant.includes("categoría") ||
-      normalizedMerchant.includes("categoria") ||
-      normalizedMerchant.includes("pagando con tus tarjetas") ||
-      normalizedMerchant.includes("encuentra descuentos") ||
-      /^\d+\s*(?:cuotas?|millas?)/i.test(merchant) ||
-      /^[\d% ]+$/.test(merchant)
-    ) {
-      return false;
+  private buildDetailUrl(slug: string | undefined): string {
+    if (!slug) {
+      return SANTANDER_BENEFITS_URL;
     }
 
-    if (categoryMentions >= 2 || this.isNavigationLine(rawText)) {
-      return false;
-    }
-
-    if (hasDomainSignal || hasNamedVenueSignal) {
-      return true;
-    }
-
-    return category === "Multiplica millas" && /latam pass|milla(?:s)? adicional/i.test(rawText);
-  }
-
-  private extractHeadlineCandidate(lines: ParsedLine[]): string | undefined {
-    for (const line of lines) {
-      if (
-        this.isNavigationLine(line.value) ||
-        DAY_LINE_PATTERN.test(line.value) ||
-        CONDITION_HINT_PATTERN.test(line.value) ||
-        DISCOUNT_PATTERN.test(line.value)
-      ) {
-        continue;
-      }
-
-      const candidate = normalizeWhitespace(line.value);
-
-      if (!candidate || GENERIC_MERCHANTS.has(toLowerNormalized(candidate))) {
-        continue;
-      }
-
-      return candidate;
-    }
-
-    return undefined;
-  }
-
-  private isNavigationLine(line: string): boolean {
-    const normalized = toLowerNormalized(line);
-    const categoryMatches = CATEGORY_NAMES.filter((category) =>
-      normalized.includes(toLowerNormalized(category)),
-    ).length;
-
-    if (categoryMatches >= 2) {
-      return true;
-    }
-
-    return (
-      normalized.includes("beneficios santander") ||
-      normalized.includes("santander rewards") ||
-      normalized.includes("haz clic en una categoría") ||
-      normalized.includes("haz click en una categoría") ||
-      normalized.includes("únete a nuestro canal") ||
-      normalized.includes("unete a nuestro canal") ||
-      normalized.includes("entérate de tus beneficios") ||
-      normalized.includes("enterate de tus beneficios") ||
-      normalized.includes("dale gusto a tus antojos") ||
-      normalized.includes("relájate y paga") ||
-      normalized.includes("relajate y paga") ||
-      normalized.includes("beneficios para ti y para el planeta") ||
-      normalized.includes("y disfruta muchos beneficios más") ||
-      normalized.includes("y disfruta muchos beneficios mas") ||
-      normalized === "multiplica" ||
-      normalized === "millas" ||
-      normalized === "descuentos"
-    );
+    return `${SANTANDER_BENEFITS_URL}/promociones/${slug}`;
   }
 }

@@ -9,6 +9,72 @@ export interface MerchantCatalogEntry {
 
 export const MERCHANT_CATALOG: MerchantCatalogEntry[] = [
   {
+    slug: "burger-king",
+    canonicalName: "Burger King",
+    categoryName: "comida_rapida",
+    aliases: ["burger king", "bk"],
+  },
+  {
+    slug: "kfc",
+    canonicalName: "KFC",
+    categoryName: "comida_rapida",
+    aliases: ["kfc", "kentucky fried chicken"],
+  },
+  {
+    slug: "subway",
+    canonicalName: "Subway",
+    categoryName: "comida_rapida",
+    aliases: ["subway"],
+  },
+  {
+    slug: "pizza-hut",
+    canonicalName: "Pizza Hut",
+    categoryName: "comida_rapida",
+    aliases: ["pizza hut"],
+  },
+  {
+    slug: "telepizza",
+    canonicalName: "Telepizza",
+    categoryName: "comida_rapida",
+    aliases: ["telepizza"],
+  },
+  {
+    slug: "little-caesars",
+    canonicalName: "Little Caesars",
+    categoryName: "comida_rapida",
+    aliases: ["little caesars", "little caesar's"],
+  },
+  {
+    slug: "wendys",
+    canonicalName: "Wendy's",
+    categoryName: "comida_rapida",
+    aliases: ["wendy's", "wendys"],
+  },
+  {
+    slug: "taco-bell",
+    canonicalName: "Taco Bell",
+    categoryName: "comida_rapida",
+    aliases: ["taco bell"],
+  },
+  {
+    slug: "melt-pizzas",
+    canonicalName: "Melt Pizzas",
+    categoryName: "comida_rapida",
+    aliases: ["melt pizzas", "melt"],
+  },
+  {
+    slug: "tommy-beans",
+    canonicalName: "Tommy Beans",
+    categoryName: "comida_rapida",
+    aliases: ["tommy beans"],
+  },
+  {
+    slug: "dunkin",
+    canonicalName: "Dunkin'",
+    categoryName: "cafeterias",
+    aliases: ["dunkin", "dunkin'"],
+  },
+  {
     slug: "juan-maestro",
     canonicalName: "Juan Maestro",
     categoryName: "comida_rapida",

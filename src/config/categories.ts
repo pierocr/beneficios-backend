@@ -86,7 +86,6 @@ export const SIMPLE_CATEGORY_KEYWORDS: Record<BenefitCategory, string[]> = {
   automotriz: [
     "automotriz",
     "automotor",
-    "auto",
     "autos",
     "vehiculo",
     "vehiculos",
@@ -218,10 +217,12 @@ export const SIMPLE_CATEGORY_KEYWORDS: Record<BenefitCategory, string[]> = {
     "rappi",
   ],
   comida_rapida: [
+    "comida",
     "comida rapida",
     "fast food",
     "pizza",
     "burger",
+    "burger king",
     "papas fritas",
     "hot dog",
     "kfc",

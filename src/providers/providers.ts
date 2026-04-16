@@ -74,10 +74,9 @@ export const providers: Provider[] = [
     name: "Santander",
     bankName: "Santander",
     country: "CL",
-    sourceUrl: "https://banco.santander.cl/beneficios/promociones/",
-    // Santander now uses a local monthly PDF, so the expected raw volume is lower than the old web scrape.
-    expectedMinRawBenefits: 60,
-    minSafePersistRatio: 0.5,
+    sourceUrl: "https://banco.santander.cl/beneficios",
+    expectedMinRawBenefits: 250,
+    minSafePersistRatio: 0.75,
     scraper: new SantanderScraper(),
   },
   {
