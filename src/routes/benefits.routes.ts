@@ -6,8 +6,9 @@ export const benefitsRouter = Router();
 
 benefitsRouter.get("/", async (req, res, next) => {
   try {
-    const benefits = await benefitsCatalogService.listBenefits(parseBenefitSearchFilters(req.query));
-    res.status(200).json(benefits);
+    const result = await benefitsCatalogService.searchBenefits(parseBenefitSearchFilters(req.query));
+    setCatalogCacheHeaders(res);
+    res.status(200).json(result);
   } catch (error) {
     next(error);
   }
@@ -15,8 +16,9 @@ benefitsRouter.get("/", async (req, res, next) => {
 
 benefitsRouter.get("/search", async (req, res, next) => {
   try {
-    const benefits = await benefitsCatalogService.listBenefits(parseBenefitSearchFilters(req.query));
-    res.status(200).json(benefits);
+    const result = await benefitsCatalogService.searchBenefits(parseBenefitSearchFilters(req.query));
+    setCatalogCacheHeaders(res);
+    res.status(200).json(result);
   } catch (error) {
     next(error);
   }
@@ -41,6 +43,7 @@ benefitsRouter.get("/:providerSlug/:merchantSlug", async (req, res, next) => {
       return;
     }
 
+    setCatalogCacheHeaders(res);
     res.status(200).json(benefit);
   } catch (error) {
     next(error);
@@ -84,6 +87,12 @@ function parseBenefitSearchFilters(query: Record<string, unknown>): BenefitSearc
     filters.sortBy = sortBy;
   }
 
+  const page = positiveIntegerQueryValue(query.page);
+  if (page !== undefined) filters.page = page;
+
+  const limit = positiveIntegerQueryValue(query.limit);
+  if (limit !== undefined) filters.limit = limit;
+
   return filters;
 }
 
@@ -115,4 +124,18 @@ function numberQueryValue(value: unknown): number | undefined {
 
   const parsed = Number(firstValue);
   return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function positiveIntegerQueryValue(value: unknown): number | undefined {
+  const parsed = numberQueryValue(value);
+
+  if (parsed === undefined || !Number.isInteger(parsed) || parsed <= 0) {
+    return undefined;
+  }
+
+  return parsed;
+}
+
+function setCatalogCacheHeaders(res: { setHeader: (name: string, value: string) => void }) {
+  res.setHeader("Cache-Control", "public, max-age=60, stale-while-revalidate=300");
 }

@@ -17,6 +17,8 @@ export interface BenefitSearchFilters {
   benefitTypes?: string[];
   todayOnly?: boolean;
   sortBy?: BenefitSort;
+  page?: number;
+  limit?: number;
 }
 
 interface BenefitDatabaseRow {
@@ -40,11 +42,9 @@ interface BenefitDatabaseRow {
   redirect_url: string | null;
   image_url: string | null;
   logo_url: string | null;
-  raw_text: string;
   raw_metadata: Record<string, unknown> | null;
   confidence_score: number | string;
   validation_status: string;
-  validation_errors: unknown;
   last_seen_at: string;
   last_scraped_at: string;
   updated_at: string;
@@ -79,6 +79,18 @@ export interface WebBenefit {
   imageUrl: string | null;
   logoUrl: string | null;
 }
+
+export interface BenefitsSearchResult {
+  items: WebBenefit[];
+  page: number;
+  limit: number;
+  total: number;
+  hasMore: boolean;
+}
+
+const DEFAULT_LIMIT = 48;
+const MAX_LIMIT = 240;
+const MAX_FETCH_LIMIT = 700;
 
 const PROVIDER_ALIASES: Record<string, string> = {
   "banco-de-chile": "bancochile",
@@ -129,7 +141,16 @@ const DAY_ORDER = ["lunes", "martes", "miercoles", "jueves", "viernes", "sabado"
 
 export class BenefitsCatalogService {
   async listBenefits(filters: BenefitSearchFilters = {}): Promise<WebBenefit[]> {
+    const result = await this.searchBenefits(filters);
+    return result.items;
+  }
+
+  async searchBenefits(filters: BenefitSearchFilters = {}): Promise<BenefitsSearchResult> {
     const supabase = getSupabaseAdminClient();
+    const page = normalizePage(filters.page);
+    const limit = normalizeLimit(filters.limit);
+    const fetchLimit = getFetchLimit(filters, page, limit);
+
     let query = supabase
       .from("benefits")
       .select(
@@ -154,11 +175,9 @@ export class BenefitsCatalogService {
           "redirect_url",
           "image_url",
           "logo_url",
-          "raw_text",
           "raw_metadata",
           "confidence_score",
           "validation_status",
-          "validation_errors",
           "last_seen_at",
           "last_scraped_at",
           "updated_at",
@@ -166,7 +185,7 @@ export class BenefitsCatalogService {
       )
       .eq("is_active", true)
       .neq("validation_status", "invalid")
-      .limit(2500);
+      .limit(fetchLimit);
 
     const providerSlugs = normalizeProviderSlugs(filters.providerSlugs);
     if (providerSlugs.length > 0) {
@@ -197,17 +216,70 @@ export class BenefitsCatalogService {
       throw new Error(`Failed to load benefits: ${error.message}`);
     }
 
-    const benefits = ((data ?? []) as unknown as BenefitDatabaseRow[]).map((row) => toWebBenefit(row));
-    return applyRuntimeFilters(benefits, filters).sort((left, right) => compareBenefits(left, right, filters.sortBy));
+    const benefits = ((data ?? []) as unknown as BenefitDatabaseRow[])
+      .map((row) => toWebBenefit(row))
+      .filter((benefit) => runtimeFilterBenefit(benefit, filters))
+      .sort((left, right) => compareBenefits(left, right, filters.sortBy));
+    const offset = (page - 1) * limit;
+    const items = benefits.slice(offset, offset + limit);
+
+    return {
+      items,
+      page,
+      limit,
+      total: benefits.length,
+      hasMore: offset + items.length < benefits.length || (data?.length ?? 0) === fetchLimit,
+    };
   }
 
   async getBenefitByMerchant(providerSlug: string, merchantSlug: string): Promise<WebBenefit | null> {
-    const benefits = await this.listBenefits({
-      providerSlugs: [providerSlug],
-      sortBy: "best",
-    });
+    const supabase = getSupabaseAdminClient();
+    const [normalizedProviderSlug] = normalizeProviderSlugs([providerSlug]);
 
-    return benefits.find((benefit) => benefit.merchantSlug === merchantSlug) ?? null;
+    const { data, error } = await supabase
+      .from("benefits")
+      .select(
+        [
+          "id",
+          "provider_slug",
+          "bank_name",
+          "merchant_name",
+          "merchant_canonical_name",
+          "merchant_slug",
+          "category_name",
+          "title",
+          "benefit_type",
+          "benefit_value",
+          "benefit_value_unit",
+          "days",
+          "channel",
+          "payment_methods",
+          "cap_amount",
+          "terms_text",
+          "source_url",
+          "redirect_url",
+          "image_url",
+          "logo_url",
+          "raw_metadata",
+          "confidence_score",
+          "validation_status",
+          "last_seen_at",
+          "last_scraped_at",
+          "updated_at",
+        ].join(", "),
+      )
+      .eq("is_active", true)
+      .neq("validation_status", "invalid")
+      .eq("provider_slug", normalizedProviderSlug ?? providerSlug)
+      .eq("merchant_slug", merchantSlug)
+      .limit(1)
+      .maybeSingle();
+
+    if (error) {
+      throw new Error(`Failed to load benefit: ${error.message}`);
+    }
+
+    return data ? toWebBenefit(data as unknown as BenefitDatabaseRow) : null;
   }
 }
 
@@ -215,7 +287,7 @@ function toWebBenefit(row: BenefitDatabaseRow): WebBenefit {
   const days = normalizeDays(toStringArray(row.days));
   const channel = normalizeChannel(toStringArray(row.channel));
   const paymentMethods = normalizePaymentMethods(toStringArray(row.payment_methods));
-  const termsText = row.terms_text || row.raw_text || row.title;
+  const termsText = row.terms_text || row.title;
   const confidenceScore = toNumber(row.confidence_score) ?? 0;
   const benefitValue = toNumber(row.benefit_value) ?? 0;
   const capAmount = toNumber(row.cap_amount);
@@ -265,45 +337,39 @@ function toWebBenefit(row: BenefitDatabaseRow): WebBenefit {
   };
 }
 
-function applyRuntimeFilters(benefits: WebBenefit[], filters: BenefitSearchFilters): WebBenefit[] {
+function runtimeFilterBenefit(benefit: WebBenefit, filters: BenefitSearchFilters): boolean {
   const search = normalizeSearch(filters.search);
   const channels = filters.channels ?? [];
   const paymentMethods = filters.paymentMethods?.map(normalizeSearch).filter(Boolean) ?? [];
   const days = filters.days && filters.days.length > 0 ? normalizeDays(filters.days) : [];
   const today = DAY_LABELS[getTodayKey()] ?? "";
+  const haystack = normalizeSearch(
+    [
+      benefit.bankName,
+      benefit.merchantName,
+      benefit.merchantCanonicalName,
+      benefit.categoryName,
+      benefit.title,
+      benefit.summary,
+      benefit.termsText,
+      benefit.paymentMethods.join(" "),
+      benefit.days.join(" "),
+    ].join(" "),
+  );
 
-  return benefits.filter((benefit) => {
-    const haystack = normalizeSearch(
-      [
-        benefit.bankName,
-        benefit.merchantName,
-        benefit.merchantCanonicalName,
-        benefit.categoryName,
-        benefit.title,
-        benefit.summary,
-        benefit.termsText,
-        benefit.paymentMethods.join(" "),
-        benefit.days.join(" "),
-      ].join(" "),
-    );
+  const matchesSearch = !search || haystack.includes(search);
+  const matchesChannels = channels.length === 0 || channels.includes(benefit.channel);
+  const benefitPaymentMethods = benefit.paymentMethods.map(normalizeSearch);
+  const matchesPayment =
+    paymentMethods.length === 0 || paymentMethods.some((method) => benefitPaymentMethods.includes(method));
+  const matchesDays =
+    days.length === 0 || benefit.days.includes("Todos los dias") || days.some((day) => benefit.days.includes(day));
+  const matchesMinDiscount =
+    filters.minBenefitValue === undefined || (isDiscountLike(benefit) && benefit.benefitValue >= filters.minBenefitValue);
+  const matchesToday =
+    !filters.todayOnly || benefit.days.includes("Todos los dias") || (today ? benefit.days.includes(today) : false);
 
-    const matchesSearch = !search || haystack.includes(search);
-    const matchesChannels = channels.length === 0 || channels.includes(benefit.channel);
-    const benefitPaymentMethods = benefit.paymentMethods.map(normalizeSearch);
-    const matchesPayment =
-      paymentMethods.length === 0 || paymentMethods.some((method) => benefitPaymentMethods.includes(method));
-    const matchesDays =
-      days.length === 0 ||
-      benefit.days.includes("Todos los dias") ||
-      days.some((day) => benefit.days.includes(day));
-    const matchesMinDiscount =
-      filters.minBenefitValue === undefined ||
-      (isDiscountLike(benefit) && benefit.benefitValue >= filters.minBenefitValue);
-    const matchesToday =
-      !filters.todayOnly || benefit.days.includes("Todos los dias") || (today ? benefit.days.includes(today) : false);
-
-    return matchesSearch && matchesChannels && matchesPayment && matchesDays && matchesMinDiscount && matchesToday;
-  });
+  return matchesSearch && matchesChannels && matchesPayment && matchesDays && matchesMinDiscount && matchesToday;
 }
 
 function compareBenefits(left: WebBenefit, right: WebBenefit, sortBy: BenefitSort = "best"): number {
@@ -524,5 +590,33 @@ function normalizeSearch(value: string | undefined): string {
     .toLowerCase()
     .trim();
 }
+
+function normalizePage(page: number | undefined): number {
+  return Number.isInteger(page) && page !== undefined && page > 0 ? page : 1;
+}
+
+function normalizeLimit(limit: number | undefined): number {
+  if (!Number.isInteger(limit) || limit === undefined || limit <= 0) {
+    return DEFAULT_LIMIT;
+  }
+
+  return Math.min(limit, MAX_LIMIT);
+}
+
+function getFetchLimit(filters: BenefitSearchFilters, page: number, limit: number): number {
+  const needsRuntimeFiltering =
+    Boolean(filters.todayOnly) ||
+    Boolean(filters.channels?.length) ||
+    Boolean(filters.days?.length) ||
+    Boolean(filters.paymentMethods?.length) ||
+    Boolean(filters.search);
+
+  if (needsRuntimeFiltering || filters.sortBy === "best") {
+    return Math.min(MAX_FETCH_LIMIT, Math.max(limit, page * limit * 3));
+  }
+
+  return Math.min(MAX_FETCH_LIMIT, page * limit);
+}
+
 
 export const benefitsCatalogService = new BenefitsCatalogService();

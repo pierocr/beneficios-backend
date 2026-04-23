@@ -72,6 +72,14 @@ create index if not exists benefits_provider_slug_idx on public.benefits(provide
 create index if not exists benefits_provider_slug_is_active_idx on public.benefits(provider_slug, is_active);
 create index if not exists benefits_merchant_slug_idx on public.benefits(merchant_slug);
 create index if not exists benefits_category_name_idx on public.benefits(category_name);
+create index if not exists benefits_active_validation_updated_idx
+  on public.benefits(is_active, validation_status, updated_at desc);
+create index if not exists benefits_active_category_value_idx
+  on public.benefits(is_active, category_name, benefit_value desc)
+  where validation_status <> 'invalid';
+create index if not exists benefits_active_provider_value_idx
+  on public.benefits(is_active, provider_slug, benefit_value desc)
+  where validation_status <> 'invalid';
 create index if not exists scraping_runs_provider_slug_idx on public.scraping_runs(provider_slug);
 
 alter table public.providers enable row level security;
