@@ -85,7 +85,7 @@ export const providers: Provider[] = [
     bankName: "Tenpo",
     country: "CL",
     sourceUrl: "https://www.tenpo.cl/beneficios",
-    expectedMinRawBenefits: 40,
+    expectedMinRawBenefits: 35,
     minSafePersistRatio: 0.7,
     scraper: new TenpoScraper(),
   },

@@ -2,6 +2,7 @@ import cors from "cors";
 import express, { NextFunction, Request, Response } from "express";
 import helmet from "helmet";
 import morgan from "morgan";
+import { adminDashboardRouter } from "./routes/admin-dashboard.routes";
 import { benefitsRouter } from "./routes/benefits.routes";
 import { healthRouter } from "./routes/health.routes";
 import { providersRouter } from "./routes/providers.routes";
@@ -17,6 +18,7 @@ app.use(express.json());
 app.use("/health", healthRouter);
 app.use("/providers", providersRouter);
 app.use("/benefits", benefitsRouter);
+app.use("/admin", adminDashboardRouter);
 
 app.use((_req, res) => {
   res.status(404).json({ error: "Route not found" });

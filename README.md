@@ -20,6 +20,7 @@ Endpoints disponibles:
 - `GET /health`
 - `GET /providers`
 - `GET /benefits/raw/:providerSlug`
+- `GET /admin/dashboard` dashboard personal de metricas, protegido por `ADMIN_DASHBOARD_TOKEN` o limitado a localhost si no se configura token.
 
 Nota: `GET /benefits/raw/:providerSlug` es solo para desarrollo. En produccion, el scraping debe ejecutarse como job o cron y no desde requests publicas.
 
@@ -78,9 +79,26 @@ Para escrituras desde backend usa:
 PERSIST_RESULTS_TO_DB=true
 SUPABASE_URL=https://your-project.supabase.co
 SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
+ADMIN_DASHBOARD_TOKEN=change-this-local-secret
 ```
 
 La `publishable key` no es suficiente para este job backend si quieres escritura confiable sin depender de politicas RLS.
+
+### Dashboard personal
+
+Con la API corriendo, abre:
+
+```text
+http://localhost:3000/admin/dashboard
+```
+
+Si configuras `ADMIN_DASHBOARD_TOKEN`, usa:
+
+```text
+http://localhost:3001/admin/dashboard?token=sr6PzJXIk6UvI7mStd2ptAv7bQuZY7m0fSVHOdekm4iLdIPTGMEALKy35vkBTDAz
+```
+
+El dashboard muestra totales por banco, ultima corrida, beneficios activos del mes en curso, nuevos del mes, beneficios disponibles hoy, estados de validacion, categorias principales y corridas recientes. Tambien existe `GET /admin/dashboard/data` para ver los mismos datos en JSON.
 
 ### Flujo de persistencia
 

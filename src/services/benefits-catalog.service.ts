@@ -182,6 +182,7 @@ export class BenefitsCatalogService {
           "last_scraped_at",
           "updated_at",
         ].join(", "),
+        { count: "exact" },
       )
       .eq("is_active", true)
       .neq("validation_status", "invalid")
@@ -202,6 +203,11 @@ export class BenefitsCatalogService {
       query = query.in("benefit_type", benefitTypes);
     }
 
+    const searchFilter = buildSearchFilter(filters.search);
+    if (searchFilter) {
+      query = query.or(searchFilter);
+    }
+
     if (filters.minBenefitValue !== undefined) {
       query = query.gte("benefit_value", filters.minBenefitValue);
     }
@@ -210,7 +216,7 @@ export class BenefitsCatalogService {
       query = query.lte("benefit_value", filters.maxBenefitValue);
     }
 
-    const { data, error } = await query;
+    const { data, error, count } = await query;
 
     if (error) {
       throw new Error(`Failed to load benefits: ${error.message}`);
@@ -222,13 +228,15 @@ export class BenefitsCatalogService {
       .sort((left, right) => compareBenefits(left, right, filters.sortBy));
     const offset = (page - 1) * limit;
     const items = benefits.slice(offset, offset + limit);
+    const reachedFetchLimit = (data?.length ?? 0) === fetchLimit;
+    const total = hasRuntimeOnlyFilters(filters) ? benefits.length : count ?? benefits.length;
 
     return {
       items,
       page,
       limit,
-      total: benefits.length,
-      hasMore: offset + items.length < benefits.length || (data?.length ?? 0) === fetchLimit,
+      total,
+      hasMore: offset + items.length < total || reachedFetchLimit,
     };
   }
 
@@ -357,7 +365,11 @@ function runtimeFilterBenefit(benefit: WebBenefit, filters: BenefitSearchFilters
     ].join(" "),
   );
 
-  const matchesSearch = !search || haystack.includes(search);
+  const searchTerms = tokenizeSearch(search);
+  const matchesSearch =
+    !search ||
+    haystack.includes(search) ||
+    (searchTerms.length > 0 && searchTerms.every((term) => haystack.includes(term)));
   const matchesChannels = channels.length === 0 || channels.includes(benefit.channel);
   const benefitPaymentMethods = benefit.paymentMethods.map(normalizeSearch);
   const matchesPayment =
@@ -591,6 +603,46 @@ function normalizeSearch(value: string | undefined): string {
     .trim();
 }
 
+function tokenizeSearch(value: string): string[] {
+  return Array.from(
+    new Set(
+      value
+        .split(/\s+/)
+        .map((term) => term.trim())
+        .filter((term) => term.length >= 2),
+    ),
+  );
+}
+
+function buildSearchFilter(search: string | undefined): string | undefined {
+  const terms = tokenizeSearch(normalizeSearch(search)).slice(0, 5);
+
+  if (terms.length === 0) {
+    return undefined;
+  }
+
+  const columns = [
+    "bank_name",
+    "merchant_name",
+    "merchant_canonical_name",
+    "merchant_slug",
+    "category_name",
+    "title",
+    "terms_text",
+  ];
+
+  return terms
+    .flatMap((term) => {
+      const pattern = `%${escapePostgrestLikePattern(term)}%`;
+      return columns.map((column) => `${column}.ilike.${pattern}`);
+    })
+    .join(",");
+}
+
+function escapePostgrestLikePattern(value: string): string {
+  return value.replace(/[%_\\]/g, (match) => `\\${match}`).replace(/[(),]/g, " ");
+}
+
 function normalizePage(page: number | undefined): number {
   return Number.isInteger(page) && page !== undefined && page > 0 ? page : 1;
 }
@@ -604,18 +656,25 @@ function normalizeLimit(limit: number | undefined): number {
 }
 
 function getFetchLimit(filters: BenefitSearchFilters, page: number, limit: number): number {
-  const needsRuntimeFiltering =
-    Boolean(filters.todayOnly) ||
-    Boolean(filters.channels?.length) ||
-    Boolean(filters.days?.length) ||
-    Boolean(filters.paymentMethods?.length) ||
-    Boolean(filters.search);
+  if (filters.search || filters.sortBy) {
+    return MAX_FETCH_LIMIT;
+  }
 
-  if (needsRuntimeFiltering || filters.sortBy === "best") {
-    return Math.min(MAX_FETCH_LIMIT, Math.max(limit, page * limit * 3));
+  if (hasRuntimeOnlyFilters(filters)) {
+    return MAX_FETCH_LIMIT;
   }
 
   return Math.min(MAX_FETCH_LIMIT, page * limit);
+}
+
+function hasRuntimeOnlyFilters(filters: BenefitSearchFilters): boolean {
+  return (
+    Boolean(filters.search) ||
+    Boolean(filters.todayOnly) ||
+    Boolean(filters.channels?.length) ||
+    Boolean(filters.days?.length) ||
+    Boolean(filters.paymentMethods?.length)
+  );
 }
 
 

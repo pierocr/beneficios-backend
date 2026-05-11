@@ -6,7 +6,7 @@ import { normalizeWhitespace } from "../utils/text";
 import { BenefitScraper } from "./scraper.types";
 
 const FALABELLA_DISCOUNTS_URL = "https://www.bancofalabella.cl/descuentos";
-const CARD_SELECTOR = "div.BenefitsCard_card__wo__P";
+const CARD_SELECTOR = "[class*='NewCardBenefits_container'], div.BenefitsCard_card__wo__P";
 const NO_MORE_RESULTS_SELECTOR = "[class*='BenefitsCard_no-more-results']";
 const SCROLL_PAUSE_MS = 1200;
 const MAX_SCROLL_ITERATIONS = 80;
@@ -24,6 +24,7 @@ interface FalabellaCardPayload {
   imageUrl: string | undefined;
   logoUrl: string | undefined;
   redirectUrl: string | undefined;
+  categoryUrl: string | undefined;
   rawText: string;
 }
 
@@ -38,49 +39,12 @@ export class FalabellaScraper implements BenefitScraper {
 
       try {
         const page = await browser.newPage();
-        await page.goto(FALABELLA_DISCOUNTS_URL, { waitUntil: "domcontentloaded", timeout: 60000 });
-        await page.waitForTimeout(2500);
-        await this.scrollUntilAllCardsLoaded(page);
+        const categoryUrls = await this.loadCategoryUrls(page);
+        const cards: FalabellaCardPayload[] = [];
 
-        const cards = await page.$$eval(
-          CARD_SELECTOR,
-          (elements): FalabellaCardPayload[] =>
-            elements
-              .map((element) => {
-                const card = element as HTMLElement;
-                const getText = (selector: string): string => {
-                  const found = card.querySelector(selector) as HTMLElement | null;
-                  return found?.innerText?.trim() ?? "";
-                };
-                const getImageSource = (selector: string): string | undefined => {
-                  const found = card.querySelector(selector) as HTMLImageElement | null;
-                  return found?.currentSrc || found?.src || undefined;
-                };
-                const anchor = card.querySelector("a") as HTMLAnchorElement | null;
-                const title = getText(".NewCardBenefits_title__fpDao");
-                const description = getText(".NewCardBenefits_description__R054f");
-                const dayText = getText(".NewCardBenefits_days__XZpWE");
-                const discountText = getText(".NewCardBenefits_text-uppercase__DRpVQ");
-                const capText = getText(".NewCardBenefits_text-bottom__Yn598");
-                const merchantName = title.replace(/^Descuento en\s+/i, "").trim();
-                const pieces = [title, description, dayText, discountText, capText].filter(Boolean);
-
-                return {
-                  id: card.dataset.id ?? "",
-                  title,
-                  description,
-                  dayText,
-                  discountText,
-                  capText,
-                  merchantName,
-                  imageUrl: getImageSource(".NewCardBenefits_image__E2fVT"),
-                  logoUrl: getImageSource(".NewCardBenefits_logo__ZQn3q"),
-                  redirectUrl: anchor?.href || undefined,
-                  rawText: pieces.join(" | "),
-                };
-              })
-              .filter((card) => card.rawText.length > 0),
-        );
+        for (const categoryUrl of categoryUrls) {
+          cards.push(...(await this.loadCardsFromUrl(page, categoryUrl)));
+        }
 
         const uniqueCards = Array.from(
           new Map(cards.map((card) => [`${card.id}:${card.title}:${card.discountText}`, card])).values(),
@@ -140,6 +104,10 @@ export class FalabellaScraper implements BenefitScraper {
             rawBenefit.metadata!.redirectUrl = card.redirectUrl;
           }
 
+          if (card.categoryUrl) {
+            rawBenefit.metadata!.categoryUrl = card.categoryUrl;
+          }
+
           if (dayText) {
             rawBenefit.metadata!.dayText = dayText;
           }
@@ -177,6 +145,68 @@ export class FalabellaScraper implements BenefitScraper {
       `Failed to scrape Banco Falabella discounts from ${FALABELLA_DISCOUNTS_URL}: ${
         lastError?.message ?? "Unknown error"
       }`,
+    );
+  }
+
+  private async loadCategoryUrls(page: Page): Promise<string[]> {
+    await page.goto(FALABELLA_DISCOUNTS_URL, { waitUntil: "domcontentloaded", timeout: 60000 });
+    await page.waitForTimeout(2500);
+
+    const categoryUrls = await page.$$eval('a[href^="/descuentos"], a[href*="bancofalabella.cl/descuentos"]', (anchors) =>
+      anchors
+        .map((anchor) => (anchor as HTMLAnchorElement).href)
+        .filter((href) => href.startsWith("https://www.bancofalabella.cl/descuentos")),
+    );
+
+    return Array.from(new Set([FALABELLA_DISCOUNTS_URL, ...categoryUrls]));
+  }
+
+  private async loadCardsFromUrl(page: Page, categoryUrl: string): Promise<FalabellaCardPayload[]> {
+    await page.goto(categoryUrl, { waitUntil: "domcontentloaded", timeout: 60000 });
+    await page.waitForTimeout(2500);
+    await this.scrollUntilAllCardsLoaded(page);
+
+    return page.$$eval(
+      CARD_SELECTOR,
+      (elements, currentCategoryUrl): FalabellaCardPayload[] =>
+        elements
+          .map((element) => {
+            const card = element as HTMLElement;
+            const getText = (selector: string): string => {
+              const found = card.querySelector(selector) as HTMLElement | null;
+              return found?.innerText?.trim() ?? "";
+            };
+            const getImageSource = (selector: string): string | undefined => {
+              const found = card.querySelector(selector) as HTMLImageElement | null;
+              return found?.currentSrc || found?.src || undefined;
+            };
+            const anchor =
+              (card.closest("a") as HTMLAnchorElement | null) ?? (card.querySelector("a") as HTMLAnchorElement | null);
+            const title = getText("[class*='NewCardBenefits_title']");
+            const description = getText("[class*='NewCardBenefits_description']");
+            const dayText = getText("[class*='NewCardBenefits_days']");
+            const discountText = getText("[class*='NewCardBenefits_text-uppercase']");
+            const capText = getText("[class*='NewCardBenefits_text-bottom']");
+            const merchantName = title.replace(/^Descuentos? en\s+/i, "").trim();
+            const pieces = [title, description, dayText, discountText, capText].filter(Boolean);
+
+            return {
+              id: card.dataset.id ?? "",
+              title,
+              description,
+              dayText,
+              discountText,
+              capText,
+              merchantName,
+              imageUrl: getImageSource("[class*='NewCardBenefits_image']"),
+              logoUrl: getImageSource("[class*='NewCardBenefits_logo']"),
+              redirectUrl: anchor?.href || undefined,
+              categoryUrl: currentCategoryUrl,
+              rawText: pieces.join(" | "),
+            };
+          })
+          .filter((card) => card.rawText.length > 0),
+      categoryUrl,
     );
   }
 

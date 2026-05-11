@@ -281,7 +281,7 @@ export class PersistenceService {
       const cardId = typeof metadata.cardId === "string" ? metadata.cardId : undefined;
       const redirectUrl = typeof metadata.redirectUrl === "string" ? metadata.redirectUrl : undefined;
 
-      if (cardId) {
+      if (cardId && !/^\d+$/.test(cardId)) {
         return `card:${cardId}`;
       }
 

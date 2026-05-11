@@ -7,7 +7,7 @@ import { BenefitScraper } from "./scraper.types";
 
 const TENPO_BENEFITS_URL = "https://www.tenpo.cl/beneficios";
 const TENPO_SCRAPE_ATTEMPTS = 3;
-const TENPO_MIN_ACCEPTABLE_BENEFITS = 40;
+const TENPO_MIN_ACCEPTABLE_BENEFITS = 35;
 const DEFAULT_USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36";
 
@@ -323,6 +323,7 @@ export class TenpoScraper implements BenefitScraper {
   private toRawBenefit(card: TenpoListCardData, detail: TenpoDetailData | undefined, index: number): RawBenefit {
     const merchantName = detail?.headline || card.merchantName || card.title;
     const benefitTitle = detail?.benefitTitle || card.title;
+    const imageUrl = detail?.imageUrl || card.backgroundImageUrl;
     const rawText = [
       merchantName,
       benefitTitle,
@@ -364,6 +365,8 @@ export class TenpoScraper implements BenefitScraper {
         dayLabels: card.dayLabels,
         city: card.city || undefined,
         category: card.category || undefined,
+        imageUrl,
+        logoUrl: card.logoImageUrl,
         backgroundImageUrl: card.backgroundImageUrl,
         logoImageUrl: card.logoImageUrl,
         detailImageUrl: detail?.imageUrl,

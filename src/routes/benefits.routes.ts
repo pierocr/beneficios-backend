@@ -137,5 +137,5 @@ function positiveIntegerQueryValue(value: unknown): number | undefined {
 }
 
 function setCatalogCacheHeaders(res: { setHeader: (name: string, value: string) => void }) {
-  res.setHeader("Cache-Control", "public, max-age=60, stale-while-revalidate=300");
+  res.setHeader("Cache-Control", "no-store");
 }

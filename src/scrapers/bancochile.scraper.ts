@@ -1,4 +1,4 @@
-import { chromium, BrowserContext } from "playwright";
+import { chromium, Page } from "playwright";
 import { env } from "../config/env";
 import { RawBenefit } from "../types/benefit.types";
 import { logger } from "../utils/logger";
@@ -94,14 +94,16 @@ export class BancoChileScraper implements BenefitScraper {
           locale: "es-CL",
           viewport: { width: 1366, height: 900 },
         });
+        const page = await context.newPage();
+        await page.goto(BANCO_CHILE_CATEGORY_URL, { waitUntil: "domcontentloaded", timeout: 60000 });
 
-        const firstPage = await this.fetchPage(context, 1);
+        const firstPage = await this.fetchPage(page, 1);
         const totalPages = firstPage.meta?.total_pages ?? 1;
         const totalEntries = firstPage.meta?.total_entries ?? 0;
         const entries = [...(firstPage.entries ?? [])];
 
         for (let pageNumber = 2; pageNumber <= totalPages; pageNumber += 1) {
-          const pageResponse = await this.fetchPage(context, pageNumber);
+          const pageResponse = await this.fetchPage(page, pageNumber);
           entries.push(...(pageResponse.entries ?? []));
         }
 
@@ -148,20 +150,34 @@ export class BancoChileScraper implements BenefitScraper {
     );
   }
 
-  private async fetchPage(context: BrowserContext, pageNumber: number): Promise<BancoChileApiResponse> {
-    const response = await context.request.get(
-      `${BANCO_CHILE_API_BASE_URL}?page=${pageNumber}&per_page=${ITEMS_PER_PAGE}`,
+  private async fetchPage(page: Page, pageNumber: number): Promise<BancoChileApiResponse> {
+    const result = await page.evaluate(
+      async ({ apiBaseUrl, itemsPerPage, pageNumber: currentPageNumber }) => {
+        const response = await fetch(`${apiBaseUrl}?page=${currentPageNumber}&per_page=${itemsPerPage}`, {
+          headers: {
+            accept: "application/json, text/plain, */*",
+          },
+        });
+        const body = await response.text();
+
+        return {
+          ok: response.ok,
+          status: response.status,
+          body,
+        };
+      },
       {
-        headers: DEFAULT_HEADERS,
-        timeout: 60000,
+        apiBaseUrl: BANCO_CHILE_API_BASE_URL,
+        itemsPerPage: ITEMS_PER_PAGE,
+        pageNumber,
       },
     );
 
-    if (!response.ok()) {
-      throw new Error(`Banco de Chile API returned ${response.status()} on page ${pageNumber}.`);
+    if (!result.ok) {
+      throw new Error(`Banco de Chile API returned ${result.status} on page ${pageNumber}.`);
     }
 
-    return (await response.json()) as BancoChileApiResponse;
+    return JSON.parse(result.body) as BancoChileApiResponse;
   }
 
   private toRawBenefit(entry: BancoChileEntry, index: number): RawBenefit {

@@ -1,4 +1,4 @@
-import { chromium } from "playwright";
+import { Page, chromium } from "playwright";
 import { RawBenefit } from "../types/benefit.types";
 import { logger } from "../utils/logger";
 import { normalizeWhitespace } from "../utils/text";
@@ -19,6 +19,13 @@ interface ItauCardData {
   backgroundImageUrl?: string;
   logoImageUrl?: string;
   logoBackgroundColor?: string;
+  detailTitle?: string;
+  detailCaptionText?: string;
+  detailHighlightText?: string;
+  detailDateText?: string;
+  detailContactText?: string;
+  detailTagsText?: string;
+  detailBenefitText?: string;
 }
 
 export class ItauScraper implements BenefitScraper {
@@ -123,7 +130,9 @@ export class ItauScraper implements BenefitScraper {
           );
         }
 
-        return uniqueCards.map((card, index) => this.toRawBenefit(card, index));
+        const enrichedCards = await this.enrichCardsWithDetails(page, uniqueCards);
+
+        return enrichedCards.map((card, index) => this.toRawBenefit(card, index));
       } catch (error) {
         lastError = error instanceof Error ? error : new Error("Unknown error");
         logger.warn("Itau scrape attempt failed", {
@@ -157,11 +166,85 @@ export class ItauScraper implements BenefitScraper {
       ...(card.backgroundImageUrl ? { backgroundImageUrl: normalizeWhitespace(card.backgroundImageUrl) } : {}),
       ...(card.logoImageUrl ? { logoImageUrl: normalizeWhitespace(card.logoImageUrl) } : {}),
       ...(card.logoBackgroundColor ? { logoBackgroundColor: normalizeWhitespace(card.logoBackgroundColor) } : {}),
+      ...(card.detailTitle ? { detailTitle: normalizeWhitespace(card.detailTitle) } : {}),
+      ...(card.detailCaptionText ? { detailCaptionText: normalizeWhitespace(card.detailCaptionText) } : {}),
+      ...(card.detailHighlightText ? { detailHighlightText: normalizeWhitespace(card.detailHighlightText) } : {}),
+      ...(card.detailDateText ? { detailDateText: normalizeWhitespace(card.detailDateText) } : {}),
+      ...(card.detailContactText ? { detailContactText: normalizeWhitespace(card.detailContactText) } : {}),
+      ...(card.detailTagsText ? { detailTagsText: normalizeWhitespace(card.detailTagsText) } : {}),
+      ...(card.detailBenefitText ? { detailBenefitText: normalizeWhitespace(card.detailBenefitText) } : {}),
     };
   }
 
+  private async enrichCardsWithDetails(page: Page, cards: ItauCardData[]): Promise<ItauCardData[]> {
+    const enrichedCards: ItauCardData[] = [];
+
+    for (const [index, card] of cards.entries()) {
+      try {
+        const detail = await this.scrapeDetail(page, card.sourceUrl);
+        enrichedCards.push(this.normalizeCard({ ...card, ...detail }));
+
+        if ((index + 1) % 10 === 0 || index === cards.length - 1) {
+          logger.info("Itau detail scrape progress", {
+            scraped: index + 1,
+            total: cards.length,
+          });
+        }
+      } catch (error) {
+        logger.warn("Itau detail scrape failed", {
+          sourceUrl: card.sourceUrl,
+          message: error instanceof Error ? error.message : "Unknown error",
+        });
+        enrichedCards.push(card);
+      }
+    }
+
+    return enrichedCards;
+  }
+
+  private async scrapeDetail(page: Page, sourceUrl: string): Promise<Partial<ItauCardData>> {
+    await page.goto(sourceUrl, {
+      waitUntil: "domcontentloaded",
+      timeout: 120000,
+    });
+    await page.waitForSelector(".beneficio", { timeout: 30000 });
+    await page.waitForTimeout(500);
+
+    return page.evaluate(() => {
+      const text = (selector: string): string => {
+        const value = document.querySelector(selector)?.textContent ?? "";
+
+        return value.replace(/\s+/g, " ").trim();
+      };
+
+      return {
+        detailTitle: text(".page-title"),
+        detailCaptionText: text(".beneficio__sidebar__caption"),
+        detailHighlightText: text(".beneficio__sidebar__highlight"),
+        detailDateText: text(".beneficio__sidebar__date"),
+        detailContactText: text(".beneficio__sidebar__contact"),
+        detailTagsText: text(".beneficio__information__tags"),
+        detailBenefitText: text(".beneficio__information__texto"),
+      };
+    });
+  }
+
   private toRawBenefit(card: ItauCardData, index: number): RawBenefit {
-    const rawPieces = [card.title, card.discountText, card.address, card.attentionMode, card.category]
+    const rawPieces = [
+      card.title,
+      card.detailTitle,
+      card.discountText,
+      card.detailCaptionText,
+      card.address,
+      card.attentionMode,
+      card.category,
+      card.detailHighlightText,
+      card.detailDateText,
+      card.detailContactText,
+      card.detailTagsText,
+      card.detailBenefitText,
+    ]
+      .filter((value): value is string => typeof value === "string")
       .map((value) => normalizeWhitespace(value))
       .filter(Boolean);
 
@@ -181,6 +264,13 @@ export class ItauScraper implements BenefitScraper {
         backgroundImageUrl: card.backgroundImageUrl,
         logoImageUrl: card.logoImageUrl,
         logoBackgroundColor: card.logoBackgroundColor,
+        detailTitle: card.detailTitle,
+        detailCaptionText: card.detailCaptionText,
+        detailHighlightText: card.detailHighlightText,
+        detailDateText: card.detailDateText,
+        detailContactText: card.detailContactText,
+        detailTagsText: card.detailTagsText,
+        detailBenefitText: card.detailBenefitText,
       },
     };
 

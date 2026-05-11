@@ -367,6 +367,12 @@ export class ScotiabankScraper implements BenefitScraper {
       return undefined;
     }
 
-    return new URL(normalized, baseUrl).toString();
+    const url = new URL(normalized, baseUrl);
+
+    if (url.hostname === "www.scotiarewards.cl" && url.pathname.startsWith("/resource/")) {
+      url.pathname = `/scclubfront${url.pathname}`;
+    }
+
+    return url.toString();
   }
 }

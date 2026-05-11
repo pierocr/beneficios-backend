@@ -193,6 +193,10 @@ export class NormalizationService {
       detectedDays.push(this.resolveCurrentBusinessDay(extractedAt));
     }
 
+    if (this.containsNormalizedPhrase(text, "manana")) {
+      detectedDays.push(this.resolveRelativeBusinessDay(extractedAt, 1));
+    }
+
     if (text.includes("todos los dias")) {
       detectedDays.push(...Object.values(DAYS_MAP));
     }
@@ -479,13 +483,20 @@ export class NormalizationService {
   }
 
   private resolveCurrentBusinessDay(extractedAt: string): string {
+    return this.resolveRelativeBusinessDay(extractedAt, 0);
+  }
+
+  private resolveRelativeBusinessDay(extractedAt: string, offsetDays: number): string {
+    const date = new Date(extractedAt);
+    date.setUTCDate(date.getUTCDate() + offsetDays);
+
     const formatter = new Intl.DateTimeFormat("es-CL", {
       weekday: "long",
       timeZone: env.APP_TIMEZONE,
     });
 
     return formatter
-      .format(new Date(extractedAt))
+      .format(date)
       .normalize("NFD")
       .replace(/[\u0300-\u036f]/g, "")
       .toLowerCase();
