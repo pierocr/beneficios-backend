@@ -1,6 +1,8 @@
 import crypto from "node:crypto";
+import { env } from "../config/env";
 import { providers } from "../providers/providers";
 import { BenefitUpsertInput, PersistedScrapingSummary } from "../types/database.types";
+import { imageCacheService, isCachedBenefitImage } from "./image-cache.service";
 import { getSupabaseAdminClient } from "../lib/supabase";
 
 interface RunSummary {
@@ -132,6 +134,10 @@ export class PersistenceService {
     });
 
     const benefitInputs = Array.from(benefitInputsByKey.values());
+
+    if (env.CACHE_BENEFIT_IMAGES) {
+      await this.cacheBenefitImages(benefitInputs);
+    }
 
     const upsertRows = benefitInputs.map((item) => this.toBenefitRow(item));
     const { error: benefitsError } = await supabase.from("benefits").upsert(upsertRows, {
@@ -399,6 +405,15 @@ export class PersistenceService {
 
   private toBenefitRow(input: BenefitUpsertInput) {
     const metadata = input.rawBenefit.metadata ?? {};
+    const sourceImageUrl = typeof metadata.sourceImageUrl === "string"
+      ? metadata.sourceImageUrl
+      : typeof metadata.imageUrl === "string"
+        ? metadata.imageUrl
+        : null;
+    const cachedImageUrl = typeof metadata.cachedImageUrl === "string" ? metadata.cachedImageUrl : null;
+    const imageCacheStatus = typeof metadata.imageCacheStatus === "string" ? metadata.imageCacheStatus : "source";
+    const imageStoragePath = typeof metadata.imageStoragePath === "string" ? metadata.imageStoragePath : null;
+    const imageCacheError = typeof metadata.imageCacheError === "string" ? metadata.imageCacheError : null;
 
     return {
       provider_slug: input.providerSlug,
@@ -422,7 +437,13 @@ export class PersistenceService {
       terms_text: input.normalizedBenefit.termsText ?? null,
       source_url: input.normalizedBenefit.sourceUrl,
       redirect_url: typeof metadata.redirectUrl === "string" ? metadata.redirectUrl : null,
-      image_url: typeof metadata.imageUrl === "string" ? metadata.imageUrl : null,
+      image_url: cachedImageUrl ?? sourceImageUrl,
+      source_image_url: sourceImageUrl,
+      cached_image_url: cachedImageUrl,
+      image_storage_path: imageStoragePath,
+      image_status: imageCacheStatus,
+      image_updated_at: imageCacheStatus !== "source" ? input.scrapedAt : null,
+      image_error: imageCacheError,
       logo_url: typeof metadata.logoUrl === "string" ? metadata.logoUrl : null,
       raw_title: input.rawBenefit.rawTitle ?? null,
       raw_category: input.rawBenefit.rawCategory ?? null,
@@ -449,6 +470,56 @@ export class PersistenceService {
     }
 
     return candidate.rawBenefit.rawText.length > current.rawBenefit.rawText.length;
+  }
+
+  private async cacheBenefitImages(benefitInputs: BenefitUpsertInput[]): Promise<void> {
+    const concurrency = 4;
+    let index = 0;
+
+    const workers = Array.from({ length: concurrency }, async () => {
+      while (index < benefitInputs.length) {
+        const currentIndex = index;
+        index += 1;
+        const benefitInput = benefitInputs[currentIndex];
+
+        if (benefitInput) {
+          await this.cacheBenefitImage(benefitInput);
+        }
+      }
+    });
+
+    await Promise.all(workers);
+  }
+
+  private async cacheBenefitImage(input: BenefitUpsertInput): Promise<void> {
+    const metadata = input.rawBenefit.metadata ?? {};
+    const sourceImageUrl = typeof metadata.imageUrl === "string" ? metadata.imageUrl : undefined;
+
+    if (!sourceImageUrl || !/^https?:\/\//i.test(sourceImageUrl)) {
+      return;
+    }
+
+    metadata.sourceImageUrl = sourceImageUrl;
+
+    const result = await imageCacheService.cacheBenefitImage({
+      providerSlug: input.providerSlug,
+      providerBenefitKey: input.providerBenefitKey,
+      merchantSlug: input.normalizedBenefit.merchantSlug,
+      sourceUrl: sourceImageUrl,
+      imageKind: "banner",
+    });
+
+    if (isCachedBenefitImage(result)) {
+      metadata.cachedImageUrl = result.publicUrl;
+      metadata.imageUrl = result.publicUrl;
+      metadata.imageStoragePath = result.storagePath;
+      metadata.imageCacheStatus = "cached";
+      metadata.imageCacheError = null;
+      return;
+    }
+
+    metadata.imageCacheStatus = "failed";
+    metadata.imageCacheError = result.errorMessage;
   }
 
   private scoreBenefitInput(input: BenefitUpsertInput): number {
