@@ -19,10 +19,16 @@ Endpoints disponibles:
 
 - `GET /health`
 - `GET /providers`
+- `GET /benefits/home`
+- `GET /benefits`
+- `GET /benefits/search`
+- `GET /benefits/:providerSlug/:merchantSlug`
+- `POST /benefit-reports`
 - `GET /benefits/raw/:providerSlug`
 - `GET /admin/dashboard` dashboard personal de metricas, protegido por `ADMIN_DASHBOARD_TOKEN` o limitado a localhost si no se configura token.
 
 Nota: `GET /benefits/raw/:providerSlug` es solo para desarrollo. En produccion, el scraping debe ejecutarse como job o cron y no desde requests publicas.
+Sin `PUBLIC_SCRAPE_TOKEN`, ese endpoint solo responde desde localhost y fuera de produccion.
 
 ## Correr un scraper
 
@@ -57,11 +63,21 @@ Ademas, los beneficios que ya no aparezcan en una corrida se marcan con `is_acti
 
 ### Esquema SQL
 
-Ejecuta [src/db/schemas/001_initial_schema.sql](/c:/Users/piero/beneficios-cl/src/db/schemas/001_initial_schema.sql) en el SQL Editor de Supabase para crear:
+Ejecuta `src/db/schemas/001_initial_schema.sql` en el SQL Editor de Supabase para crear:
 
 - `providers`
 - `scraping_runs`
 - `benefits`
+
+Luego ejecuta `src/db/schemas/002_mvp_user_data_and_indexes.sql` para agregar:
+
+- indices de busqueda/filtros para el catalogo MVP
+- `profiles`
+- `user_wallet_items`
+- `user_favorite_merchants`
+- `user_saved_benefits`
+- `user_preferences`
+- `benefit_reports`
 
 Ese mismo script deja `RLS` activado con esta base:
 
@@ -70,6 +86,7 @@ Ese mismo script deja `RLS` activado con esta base:
 - `scraping_runs`: sin lectura publica
 
 Las escrituras quedan reservadas al backend usando `SUPABASE_SERVICE_ROLE_KEY`.
+Las tablas de billetera, favoritos y preferencias usan RLS por `auth.uid()`. No almacenan numeros de tarjeta ni datos bancarios sensibles.
 
 ### Variables de entorno para escribir en BD
 
@@ -80,9 +97,20 @@ PERSIST_RESULTS_TO_DB=true
 SUPABASE_URL=https://your-project.supabase.co
 SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
 ADMIN_DASHBOARD_TOKEN=change-this-local-secret
+PUBLIC_SCRAPE_TOKEN=change-this-if-you-enable-raw-scraping
+CORS_ALLOWED_ORIGINS=http://localhost:3000,http://localhost:3001
 ```
 
 La `publishable key` no es suficiente para este job backend si quieres escritura confiable sin depender de politicas RLS.
+
+### Tests y seguridad
+
+```bash
+npm test
+npm audit --omit=dev
+```
+
+`npm test` compila TypeScript y ejecuta pruebas unitarias sobre normalizacion/validacion de beneficios no porcentuales.
 
 ### Dashboard personal
 
@@ -161,6 +189,14 @@ src/
 2. Registrar el provider en `src/providers/providers.ts` con `slug`, `name`, `bankName`, `country`, `sourceUrl` y `scraper`.
 3. Ejecutar `npm run scrape <providerSlug>` para validar el flujo end-to-end.
 
+## Endpoints MVP
+
+`GET /benefits/home` devuelve solo data optimizada para Home: descuentos de hoy, descuentos de manana, destacados, categorias populares y providers. Evita cargar todo el catalogo en la primera vista.
+
+`GET /benefits` y `GET /benefits/search` aceptan `q`/`search`, `provider`, `providerSlug`, `bank`, `walletProviders`, `category`, `day`, `paymentMethod`, `channel`, `modality`, `sort`, `sortBy`, `limit`, `page` y `offset`.
+
+`POST /benefit-reports` guarda reportes de informacion incorrecta en Supabase para revision posterior.
+
 ## Notas de arquitectura
 
 - `RawBenefit` representa el texto extraido tal como viene desde la fuente.
@@ -168,5 +204,5 @@ src/
 - `categoryName` y `categorySource` quedan persistidos en el JSON de salida para facilitar filtros y futura carga a base de datos.
 - `merchantCanonicalName`, `merchantSlug`, `merchantSource` y `merchantMatchedAlias` quedan persistidos para compartir catalogo entre bancos.
 - `ValidationService` marca registros como `valid`, `needs_review` o `invalid`.
-- No hay base de datos todavia, pero la separacion `scraper -> normalization -> validation` deja listo el proyecto para persistir resultados luego en Supabase o Postgres.
 - La persistencia actual esta preparada para crecimiento: mismo comercio entre bancos, beneficios versionados por corrida y actualizacion idempotente sin duplicados.
+- Los archivos en `output/` son artefactos locales de scraping y no son parte del runtime web. Se mantienen fuera de git.

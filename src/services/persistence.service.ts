@@ -362,7 +362,7 @@ export class PersistenceService {
       rowsBySignature.set(signature, current);
     }
 
-    const idsToDelete: string[] = [];
+    const idsToDeactivate: string[] = [];
 
     for (const groupedRows of rowsBySignature.values()) {
       if (groupedRows.length <= 1) {
@@ -377,17 +377,23 @@ export class PersistenceService {
         return String(right.updated_at ?? "").localeCompare(String(left.updated_at ?? ""));
       });
 
-      idsToDelete.push(...groupedRows.slice(1).map((row) => row.id as string));
+      idsToDeactivate.push(...groupedRows.slice(1).map((row) => row.id as string));
     }
 
-    if (idsToDelete.length === 0) {
+    if (idsToDeactivate.length === 0) {
       return;
     }
 
-    const { error: deleteError } = await supabase.from("benefits").delete().in("id", idsToDelete);
+    const { error: deactivateError } = await supabase
+      .from("benefits")
+      .update({
+        is_active: false,
+        updated_at: new Date().toISOString(),
+      })
+      .in("id", idsToDeactivate);
 
-    if (deleteError) {
-      throw new Error(`Failed to delete duplicate benefits: ${deleteError.message}`);
+    if (deactivateError) {
+      throw new Error(`Failed to deactivate duplicate benefits: ${deactivateError.message}`);
     }
   }
 

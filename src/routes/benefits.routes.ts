@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { env } from "../config/env";
 import { benefitsCatalogService, BenefitSearchFilters } from "../services/benefits-catalog.service";
 import { scrapingService } from "../services/scraping.service";
 
@@ -7,6 +8,16 @@ export const benefitsRouter = Router();
 benefitsRouter.get("/", async (req, res, next) => {
   try {
     const result = await benefitsCatalogService.searchBenefits(parseBenefitSearchFilters(req.query));
+    setCatalogCacheHeaders(res);
+    res.status(200).json(result);
+  } catch (error) {
+    next(error);
+  }
+});
+
+benefitsRouter.get("/home", async (_req, res, next) => {
+  try {
+    const result = await benefitsCatalogService.getHomeBenefits();
     setCatalogCacheHeaders(res);
     res.status(200).json(result);
   } catch (error) {
@@ -26,13 +37,42 @@ benefitsRouter.get("/search", async (req, res, next) => {
 
 benefitsRouter.get("/raw/:providerSlug", async (req, res, next) => {
   try {
-    // Development only: in production, scraping should run in background jobs or cron, not public requests.
+    if (!canAccessRawScraping(req)) {
+      res.status(403).json({ error: "Raw scraping is not available from this request" });
+      return;
+    }
+
     const rawBenefits = await scrapingService.scrapeByProvider(req.params.providerSlug);
     res.status(200).json(rawBenefits);
   } catch (error) {
     next(error);
   }
 });
+
+function canAccessRawScraping(req: {
+  ip?: string | undefined;
+  socket: { remoteAddress?: string | undefined };
+  header: (name: string) => string | undefined;
+  query: { token?: unknown };
+}): boolean {
+  if (env.PUBLIC_SCRAPE_TOKEN) {
+    const authorization = req.header("authorization");
+    const bearerToken = authorization?.toLowerCase().startsWith("bearer ")
+      ? authorization.slice("bearer ".length).trim()
+      : undefined;
+    const queryToken = typeof req.query.token === "string" ? req.query.token : undefined;
+    const headerToken = req.header("x-scrape-token");
+
+    return [bearerToken, headerToken, queryToken].includes(env.PUBLIC_SCRAPE_TOKEN);
+  }
+
+  return env.NODE_ENV !== "production" && isLocalRequest(req);
+}
+
+function isLocalRequest(req: { ip?: string | undefined; socket: { remoteAddress?: string | undefined } }): boolean {
+  const ip = req.ip || req.socket.remoteAddress || "";
+  return ["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(ip) || ip.endsWith("127.0.0.1");
+}
 
 benefitsRouter.get("/:providerSlug/:merchantSlug", async (req, res, next) => {
   try {
@@ -55,13 +95,18 @@ function parseBenefitSearchFilters(query: Record<string, unknown>): BenefitSearc
     todayOnly: firstQueryValue(query.todayOnly) === "true",
   };
 
-  const providerSlugs = queryValues(query.providerSlug);
+  const providerSlugs = [
+    ...queryValues(query.providerSlug),
+    ...queryValues(query.provider),
+    ...queryValues(query.bank),
+    ...queryValues(query.walletProviders),
+  ];
   if (providerSlugs.length > 0) filters.providerSlugs = providerSlugs;
 
-  const paymentMethods = queryValues(query.paymentMethod);
+  const paymentMethods = [...queryValues(query.paymentMethod), ...queryValues(query.paymentType)];
   if (paymentMethods.length > 0) filters.paymentMethods = paymentMethods;
 
-  const channels = queryValues(query.channel);
+  const channels = [...queryValues(query.channel), ...queryValues(query.modality)];
   if (channels.length > 0) filters.channels = channels as NonNullable<BenefitSearchFilters["channels"]>;
 
   const days = queryValues(query.day);
@@ -70,7 +115,7 @@ function parseBenefitSearchFilters(query: Record<string, unknown>): BenefitSearc
   const benefitTypes = queryValues(query.benefitType);
   if (benefitTypes.length > 0) filters.benefitTypes = benefitTypes;
 
-  const search = firstQueryValue(query.search);
+  const search = firstQueryValue(query.search) ?? firstQueryValue(query.q);
   if (search !== undefined) filters.search = search;
 
   const category = firstQueryValue(query.category);
@@ -82,7 +127,7 @@ function parseBenefitSearchFilters(query: Record<string, unknown>): BenefitSearc
   const maxBenefitValue = numberQueryValue(query.maxBenefitValue);
   if (maxBenefitValue !== undefined) filters.maxBenefitValue = maxBenefitValue;
 
-  const sortBy = firstQueryValue(query.sortBy);
+  const sortBy = firstQueryValue(query.sortBy) ?? firstQueryValue(query.sort);
   if (sortBy === "best" || sortBy === "discount" || sortBy === "ending") {
     filters.sortBy = sortBy;
   }
@@ -92,6 +137,11 @@ function parseBenefitSearchFilters(query: Record<string, unknown>): BenefitSearc
 
   const limit = positiveIntegerQueryValue(query.limit);
   if (limit !== undefined) filters.limit = limit;
+
+  const offset = nonNegativeIntegerQueryValue(query.offset);
+  if (offset !== undefined && filters.limit) {
+    filters.page = Math.floor(offset / filters.limit) + 1;
+  }
 
   return filters;
 }
@@ -136,6 +186,16 @@ function positiveIntegerQueryValue(value: unknown): number | undefined {
   return parsed;
 }
 
+function nonNegativeIntegerQueryValue(value: unknown): number | undefined {
+  const parsed = numberQueryValue(value);
+
+  if (parsed === undefined || !Number.isInteger(parsed) || parsed < 0) {
+    return undefined;
+  }
+
+  return parsed;
+}
+
 function setCatalogCacheHeaders(res: { setHeader: (name: string, value: string) => void }) {
-  res.setHeader("Cache-Control", "no-store");
+  res.setHeader("Cache-Control", "public, max-age=60, stale-while-revalidate=300");
 }

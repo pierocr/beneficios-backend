@@ -1,4 +1,12 @@
-export type BenefitType = "discount" | "cashback" | "installments" | "points" | "unknown";
+export type BenefitType =
+  | "discount"
+  | "cashback"
+  | "installments"
+  | "points"
+  | "free_shipping"
+  | "access"
+  | "giveaway"
+  | "unknown";
 export type BenefitValueUnit = "percent" | "amount" | "unknown";
 export type ValidationStatus = "valid" | "needs_review" | "invalid";
 export type BenefitCategory =

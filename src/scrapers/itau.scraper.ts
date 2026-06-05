@@ -1,4 +1,5 @@
 import { Page, chromium } from "playwright";
+import { env } from "../config/env";
 import { RawBenefit } from "../types/benefit.types";
 import { logger } from "../utils/logger";
 import { normalizeWhitespace } from "../utils/text";
@@ -35,7 +36,7 @@ export class ItauScraper implements BenefitScraper {
     for (let attempt = 1; attempt <= ITAU_SCRAPE_ATTEMPTS; attempt += 1) {
       const browser = await chromium.launch({
         channel: "chrome",
-        headless: false,
+        headless: env.PLAYWRIGHT_HEADLESS,
         args: ITAU_BROWSER_ARGS,
       });
 

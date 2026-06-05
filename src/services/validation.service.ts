@@ -20,8 +20,8 @@ export class ValidationService {
       validationErrors.push("benefitType should not be unknown");
     }
 
-    if (benefit.benefitType === "discount" && benefit.benefitValue === undefined) {
-      validationErrors.push("discount benefits should include benefitValue");
+    if (["discount", "cashback"].includes(benefit.benefitType) && benefit.benefitValue === undefined) {
+      validationErrors.push(`${benefit.benefitType} benefits should include benefitValue`);
     }
 
     let validationStatus: NormalizedBenefit["validationStatus"] = "valid";

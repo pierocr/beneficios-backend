@@ -59,7 +59,7 @@ export interface WebBenefit {
   merchantSlug: string;
   categoryName: string;
   title: string;
-  benefitType: "discount" | "cashback" | "installments" | "points" | "unknown";
+  benefitType: "discount" | "cashback" | "installments" | "points" | "free_shipping" | "access" | "giveaway" | "unknown";
   benefitValue: number;
   benefitValueUnit: WebBenefitValueUnit;
   days: string[];
@@ -88,9 +88,17 @@ export interface BenefitsSearchResult {
   hasMore: boolean;
 }
 
+export interface BenefitsHomeResult {
+  todayBenefits: WebBenefit[];
+  tomorrowBenefits: WebBenefit[];
+  featuredBenefits: WebBenefit[];
+  popularCategories: Array<{ name: string; slug: string; count: number }>;
+  providers: Array<{ slug: string; name: string; count: number }>;
+}
+
 const DEFAULT_LIMIT = 48;
-const MAX_LIMIT = 240;
-const MAX_FETCH_LIMIT = 700;
+const MAX_LIMIT = 96;
+const MAX_FETCH_LIMIT = 5000;
 
 const PROVIDER_ALIASES: Record<string, string> = {
   "banco-de-chile": "bancochile",
@@ -138,8 +146,51 @@ const DAY_LABELS: Record<string, string> = {
 };
 
 const DAY_ORDER = ["lunes", "martes", "miercoles", "jueves", "viernes", "sabado", "domingo"];
+const DAILY_FOOD_CATEGORY_LABELS = new Set(["restaurantes", "cafeterias", "comida rapida", "delivery"]);
 
 export class BenefitsCatalogService {
+  async getHomeBenefits(): Promise<BenefitsHomeResult> {
+    const [todayResult, tomorrowResult, featuredResult, categoryResult] = await Promise.all([
+      this.searchBenefits({ days: [getTodayKey()], sortBy: "best", limit: 72 }),
+      this.searchBenefits({ days: [getRelativeDayKey(1)], sortBy: "best", limit: 48 }),
+      this.searchBenefits({ sortBy: "discount", limit: 10 }),
+      this.searchBenefits({ sortBy: "best", limit: 96 }),
+    ]);
+    const categoryCounts = new Map<string, { name: string; slug: string; count: number }>();
+    const providerCounts = new Map<string, { slug: string; name: string; count: number }>();
+
+    for (const benefit of categoryResult.items) {
+      const categorySlug = normalizeSearch(benefit.categoryName).replace(/ /g, "_");
+      const currentCategory = categoryCounts.get(categorySlug) ?? {
+        name: benefit.categoryName,
+        slug: categorySlug,
+        count: 0,
+      };
+      currentCategory.count += 1;
+      categoryCounts.set(categorySlug, currentCategory);
+
+      const currentProvider = providerCounts.get(benefit.providerSlug) ?? {
+        slug: benefit.providerSlug,
+        name: benefit.bankName,
+        count: 0,
+      };
+      currentProvider.count += 1;
+      providerCounts.set(benefit.providerSlug, currentProvider);
+    }
+
+    return {
+      todayBenefits: pickDailyFoodBenefits(todayResult.items, 24),
+      tomorrowBenefits: pickDailyFoodBenefits(tomorrowResult.items, 12),
+      featuredBenefits: featuredResult.items,
+      popularCategories: Array.from(categoryCounts.values())
+        .sort((left, right) => right.count - left.count)
+        .slice(0, 10),
+      providers: Array.from(providerCounts.values())
+        .sort((left, right) => right.count - left.count)
+        .slice(0, 10),
+    };
+  }
+
   async listBenefits(filters: BenefitSearchFilters = {}): Promise<WebBenefit[]> {
     const result = await this.searchBenefits(filters);
     return result.items;
@@ -216,6 +267,8 @@ export class BenefitsCatalogService {
       query = query.lte("benefit_value", filters.maxBenefitValue);
     }
 
+    query = applyDatabaseOrdering(query, filters.sortBy);
+
     const { data, error, count } = await query;
 
     if (error) {
@@ -289,6 +342,15 @@ export class BenefitsCatalogService {
 
     return data ? toWebBenefit(data as unknown as BenefitDatabaseRow) : null;
   }
+}
+
+function pickDailyFoodBenefits(benefits: WebBenefit[], limit: number): WebBenefit[] {
+  const foodBenefits = benefits.filter(isDailyFoodBenefit);
+  return (foodBenefits.length > 0 ? foodBenefits : benefits).slice(0, limit);
+}
+
+function isDailyFoodBenefit(benefit: WebBenefit): boolean {
+  return DAILY_FOOD_CATEGORY_LABELS.has(normalizeSearch(benefit.categoryName));
 }
 
 function toWebBenefit(row: BenefitDatabaseRow): WebBenefit {
@@ -398,6 +460,27 @@ function compareBenefits(left: WebBenefit, right: WebBenefit, sortBy: BenefitSor
   return rightScore - leftScore;
 }
 
+function applyDatabaseOrdering<T extends { order: (column: string, options?: { ascending?: boolean; nullsFirst?: boolean }) => T }>(
+  query: T,
+  sortBy: BenefitSort = "best",
+): T {
+  if (sortBy === "discount") {
+    return query.order("benefit_value", { ascending: false, nullsFirst: false }).order("confidence_score", {
+      ascending: false,
+      nullsFirst: false,
+    });
+  }
+
+  if (sortBy === "ending") {
+    return query.order("last_seen_at", { ascending: true, nullsFirst: false });
+  }
+
+  return query.order("confidence_score", { ascending: false, nullsFirst: false }).order("benefit_value", {
+    ascending: false,
+    nullsFirst: false,
+  });
+}
+
 function discountComparableValue(benefit: WebBenefit): number {
   return isDiscountLike(benefit) ? benefit.benefitValue : 0;
 }
@@ -472,7 +555,7 @@ function normalizePaymentMethods(methods: string[]): string[] {
 }
 
 function normalizeBenefitType(value: string): WebBenefit["benefitType"] {
-  if (["discount", "cashback", "installments", "points"].includes(value)) {
+  if (["discount", "cashback", "installments", "points", "free_shipping", "access", "giveaway"].includes(value)) {
     return value as WebBenefit["benefitType"];
   }
 
@@ -506,6 +589,8 @@ function buildSummary(input: {
   const value =
     input.benefitValueUnit === "percentage"
       ? `${input.benefitValue}%`
+      : input.benefitValueUnit === "clp" && input.benefitValue > 0
+        ? `${new Intl.NumberFormat("es-CL").format(input.benefitValue)} CLP`
       : input.benefitValue > 0
         ? String(input.benefitValue)
         : "beneficio";
@@ -519,6 +604,18 @@ function buildSummary(input: {
 
   if (input.benefitType === "installments") {
     return `Cuotas o financiamiento preferente en ${input.merchantName} con ${input.bankName}, disponible ${days} por canal ${channel}${cap}.`;
+  }
+
+  if (input.benefitType === "free_shipping") {
+    return `Despacho gratis en ${input.merchantName} con ${input.bankName}, disponible ${days} por canal ${channel}${cap}.`;
+  }
+
+  if (input.benefitType === "access") {
+    return `Acceso o preventa exclusiva en ${input.merchantName} con ${input.bankName}, disponible ${days} por canal ${channel}${cap}.`;
+  }
+
+  if (input.benefitType === "giveaway") {
+    return `Beneficio promocional en ${input.merchantName} con ${input.bankName}, disponible ${days} por canal ${channel}${cap}.`;
   }
 
   return `${value} de descuento en ${input.merchantName} con ${input.bankName}, disponible ${days} por canal ${channel}${cap}.`;
@@ -559,7 +656,13 @@ function addDaysIsoDate(date: string, days: number): string {
 }
 
 function getTodayKey(): string {
-  const dayIndex = new Date().getDay();
+  return getRelativeDayKey(0);
+}
+
+function getRelativeDayKey(offsetDays: number): string {
+  const date = new Date();
+  date.setDate(date.getDate() + offsetDays);
+  const dayIndex = date.getDay();
   return DAY_ORDER[dayIndex === 0 ? 6 : dayIndex - 1] ?? "lunes";
 }
 

@@ -46,6 +46,11 @@ interface ResolvedMerchant {
   categoryFromCatalog?: BenefitCategory;
 }
 
+interface ExtractedBenefitValue {
+  value: number;
+  unit: BenefitValueUnit;
+}
+
 export class NormalizationService {
   normalize(rawBenefits: RawBenefit[]): NormalizedBenefit[] {
     return rawBenefits.map((rawBenefit) => this.normalizeOne(rawBenefit));
@@ -56,16 +61,18 @@ export class NormalizationService {
     const text = normalizeWhitespace(rawBenefit.rawText);
     const lowerText = toLowerNormalized(text);
     const title = rawBenefit.rawTitle ? normalizeWhitespace(rawBenefit.rawTitle) : truncateText(text, 120);
-    const benefitValue =
-      this.extractNumericValue(this.getMetadataText(metadata.discountText)) ?? this.extractDiscountPercentage(lowerText);
+    const extractedBenefitValue =
+      this.extractBenefitValue(this.getMetadataText(metadata.discountText)) ?? this.extractBenefitValue(lowerText);
+    const benefitValue = extractedBenefitValue?.value;
     const benefitType = this.detectBenefitType(
       lowerText,
       benefitValue,
+      extractedBenefitValue?.unit ?? "unknown",
       this.getMetadataText(metadata.offerType),
       this.getMetadataStringArray(metadata.tags),
       this.getMetadataStringArray(metadata.categories),
     );
-    const benefitValueUnit: BenefitValueUnit = benefitValue !== undefined ? "percent" : "unknown";
+    const benefitValueUnit: BenefitValueUnit = extractedBenefitValue?.unit ?? "unknown";
     const days = this.detectDays(this.buildDayText(text, metadata), rawBenefit.extractedAt);
     const channel = this.detectChannel(lowerText, metadata);
     const paymentMethods = this.detectPaymentMethods(lowerText, metadata);
@@ -136,18 +143,38 @@ export class NormalizationService {
     return match ? Number(match[1]) : undefined;
   }
 
-  private extractNumericValue(text: string | undefined): number | undefined {
+  private extractBenefitValue(text: string | undefined): ExtractedBenefitValue | undefined {
     if (!text) {
       return undefined;
     }
 
-    const match = text.match(/(\d{1,3})/);
-    return match ? Number(match[1]) : undefined;
+    const percentage = this.extractDiscountPercentage(text);
+    if (percentage !== undefined) {
+      return {
+        value: percentage,
+        unit: "percent",
+      };
+    }
+
+    const amountMatch = text.match(/\$\s?([\d.]{2,})/);
+    if (amountMatch?.[1]) {
+      const value = Number(amountMatch[1].replace(/\./g, ""));
+
+      if (Number.isFinite(value) && value > 0) {
+        return {
+          value,
+          unit: "amount",
+        };
+      }
+    }
+
+    return undefined;
   }
 
   private detectBenefitType(
     text: string,
-    discountPercentage: number | undefined,
+    benefitValue: number | undefined,
+    benefitValueUnit: BenefitValueUnit,
     offerType?: string,
     tags: string[] = [],
     categories: string[] = [],
@@ -156,7 +183,14 @@ export class NormalizationService {
     const normalizedTags = tags.map((item) => toLowerNormalized(item));
     const normalizedCategories = categories.map((item) => toLowerNormalized(item));
 
-    if (normalizedOfferType.includes("cashback") || normalizedTags.includes("cashback") || normalizedCategories.includes("cashback")) {
+    if (
+      normalizedOfferType.includes("cashback") ||
+      normalizedTags.includes("cashback") ||
+      normalizedCategories.includes("cashback") ||
+      text.includes("cashback") ||
+      text.includes("devolucion") ||
+      text.includes("reembolso")
+    ) {
       return "cashback";
     }
 
@@ -169,15 +203,23 @@ export class NormalizationService {
       return "installments";
     }
 
-    if (text.includes("cashback")) {
-      return "cashback";
+    if (text.includes("despacho gratis") || text.includes("envio gratis") || text.includes("delivery gratis")) {
+      return "free_shipping";
     }
 
     if (text.includes("puntos") || text.includes("doble puntos") || /d[oó]lares?[- ]premio/.test(text) || text.includes("millas")) {
       return "points";
     }
 
-    if (discountPercentage !== undefined || text.includes("descuento") || text.includes("dcto")) {
+    if (text.includes("preventa") || text.includes("preventas") || text.includes("acceso") || text.includes("salon vip") || text.includes("salones vip")) {
+      return "access";
+    }
+
+    if (text.includes("sorteo") || text.includes("concurso") || text.includes("gana un")) {
+      return "giveaway";
+    }
+
+    if (benefitValue !== undefined || benefitValueUnit !== "unknown" || text.includes("descuento") || text.includes("dcto")) {
       return "discount";
     }
 

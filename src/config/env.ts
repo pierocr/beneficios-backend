@@ -19,6 +19,18 @@ const envSchema = z.object({
   SUPABASE_SERVICE_ROLE_KEY: z.string().optional(),
   DATABASE_URL: z.string().optional(),
   ADMIN_DASHBOARD_TOKEN: z.string().optional(),
+  PUBLIC_SCRAPE_TOKEN: z.string().optional(),
+  CORS_ALLOWED_ORIGINS: z
+    .string()
+    .optional()
+    .transform((value) =>
+      value
+        ? value
+            .split(",")
+            .map((origin) => origin.trim())
+            .filter(Boolean)
+        : [],
+    ),
 });
 
 const parsedEnv = envSchema.safeParse(process.env);
